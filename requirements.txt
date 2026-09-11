@@ -1,0 +1,5 @@
+sdv==1.32.0
+gradio>=5.0,<7
+pandas>=2.2,<3
+numpy>=1.26,<3
+torch>=2.2
