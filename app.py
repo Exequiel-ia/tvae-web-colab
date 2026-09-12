@@ -51,13 +51,12 @@ def inspect_csv(csv_file):
         return f"No fue posible leer el CSV: {exc}", None
 
 
-def generate_tvae(
+def train_tvae(
     csv_file,
     epochs,
     batch_size,
     embedding_dim,
     seed,
-    synthetic_rows,
     progress=gr.Progress(),
 ):
     if not csv_file:
@@ -67,10 +66,8 @@ def generate_tvae(
     batch_size = int(batch_size)
     embedding_dim = int(embedding_dim)
     seed = int(seed)
-    synthetic_rows = int(synthetic_rows)
-
-    if min(epochs, batch_size, embedding_dim) <= 0 or synthetic_rows < 0:
-        raise gr.Error("Los parámetros deben ser números positivos; filas sintéticas puede ser 0.")
+    if min(epochs, batch_size, embedding_dim) <= 0:
+        raise gr.Error("Los parámetros del entrenamiento deben ser números positivos.")
 
     work_dir = Path(tempfile.mkdtemp(prefix="tvae_run_"))
     progress(0.05, desc="Leyendo el dataset completo")
@@ -87,7 +84,6 @@ def generate_tvae(
             if isinstance(real_data[column].dtype, pd.StringDtype):
                 real_data[column] = real_data[column].astype(object)
 
-        rows_to_generate = len(real_data) if synthetic_rows == 0 else synthetic_rows
         _seed_everything(seed)
 
         progress(0.12, desc="Detectando metadatos")
@@ -117,19 +113,9 @@ def generate_tvae(
         model_path = work_dir / "modelo_tvae.pkl"
         model.save(filepath=model_path)
 
-        progress(0.82, desc=f"Generando {rows_to_generate:,} registros sintéticos")
-        generation_start = time.perf_counter()
-        synthetic_data = model.sample(num_rows=rows_to_generate)
-        generation_seconds = time.perf_counter() - generation_start
-        synthetic_data = synthetic_data.reindex(columns=real_data.columns)
-
-        synthetic_path = work_dir / "datos_sinteticos_TVAE.csv"
-        synthetic_data.to_csv(synthetic_path, index=False, encoding="utf-8-sig")
-
         config = {
             "modelo": "TVAE",
             "filas_entrenamiento": len(real_data),
-            "filas_generadas": len(synthetic_data),
             "columnas": len(real_data.columns),
             "epochs": epochs,
             "batch_size": batch_size,
@@ -138,29 +124,86 @@ def generate_tvae(
             "gpu_disponible": torch.cuda.is_available(),
             "dispositivo": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU",
             "segundos_entrenamiento": round(training_seconds, 3),
-            "segundos_generacion": round(generation_seconds, 3),
         }
-        (work_dir / "configuracion_y_tiempos.json").write_text(
+        config_path = work_dir / "configuracion_entrenamiento.json"
+        config_path.write_text(
             json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-        progress(0.94, desc="Preparando descarga")
+        status = (
+            "Entrenamiento finalizado\n\n"
+            f"- Entrenamiento: {_duration(training_seconds)}\n"
+            f"- Registros usados: {len(real_data):,}\n"
+            f"- Columnas: {len(real_data.columns):,}\n"
+            f"- Dispositivo: {config['dispositivo']}\n\n"
+            "El modelo quedó disponible para generar datos sin volver a entrenar."
+        )
+        progress(1.0, desc="Listo")
+        return status, str(model_path), str(model_path), str(config_path)
+    except Exception as exc:
+        raise gr.Error(f"El entrenamiento se detuvo: {exc}") from exc
+
+
+def generate_synthetic_data(
+    trained_model_path,
+    uploaded_model,
+    synthetic_rows,
+    progress=gr.Progress(),
+):
+    """Genera datos desde un modelo ya entrenado, sin repetir el entrenamiento."""
+    synthetic_rows = int(synthetic_rows)
+    if synthetic_rows <= 0:
+        raise gr.Error("La cantidad de registros a generar debe ser mayor que cero.")
+
+    model_path = uploaded_model or trained_model_path
+    if not model_path:
+        raise gr.Error(
+            "Primero entrena un modelo en el paso 1 o carga un modelo TVAE guardado."
+        )
+
+    work_dir = Path(tempfile.mkdtemp(prefix="tvae_generation_"))
+    try:
+        progress(0.10, desc="Cargando el modelo TVAE")
+        model = TVAESynthesizer.load(filepath=model_path)
+
+        progress(0.25, desc=f"Generando {synthetic_rows:,} registros")
+        generation_start = time.perf_counter()
+        synthetic_data = model.sample(num_rows=synthetic_rows)
+        generation_seconds = time.perf_counter() - generation_start
+
+        progress(0.85, desc="Guardando los resultados")
+        synthetic_path = work_dir / f"datos_sinteticos_TVAE_{synthetic_rows}.csv"
+        synthetic_data.to_csv(synthetic_path, index=False, encoding="utf-8-sig")
+
+        generation_config = {
+            "modelo": "TVAE",
+            "modelo_utilizado": Path(model_path).name,
+            "filas_generadas": len(synthetic_data),
+            "columnas": len(synthetic_data.columns),
+            "segundos_generacion": round(generation_seconds, 3),
+            "dispositivo": (
+                torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+            ),
+        }
+        (work_dir / "configuracion_generacion.json").write_text(
+            json.dumps(generation_config, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         archive = shutil.make_archive(
-            str(work_dir.parent / f"{work_dir.name}_resultados_TVAE"), "zip", work_dir
+            str(work_dir.parent / f"{work_dir.name}_resultados"), "zip", work_dir
         )
 
         status = (
-            "Ejecución finalizada\n\n"
-            f"- Entrenamiento: {_duration(training_seconds)}\n"
-            f"- Generación: {_duration(generation_seconds)}\n"
-            f"- Registros usados: {len(real_data):,}\n"
+            "Generación finalizada\n\n"
             f"- Registros generados: {len(synthetic_data):,}\n"
-            f"- Dispositivo: {config['dispositivo']}"
+            f"- Columnas: {len(synthetic_data.columns):,}\n"
+            f"- Tiempo de generación: {_duration(generation_seconds)}\n\n"
+            "Puedes cambiar la cantidad y volver a generar sin reentrenar."
         )
-        progress(1.0, desc="Listo")
-        return status, synthetic_data.head(20), archive
+        progress(1.0, desc="Generación lista")
+        return status, synthetic_data.head(20), str(synthetic_path), archive
     except Exception as exc:
-        raise gr.Error(f"La ejecución se detuvo: {exc}") from exc
+        raise gr.Error(f"La generación se detuvo: {exc}") from exc
 
 
 CSS = """
@@ -175,41 +218,104 @@ CSS = """
 with gr.Blocks(title=APP_TITLE, css=CSS, theme=gr.themes.Soft(primary_hue="cyan")) as demo:
     gr.Markdown(
         "# TVAE · Generador de datos sintéticos\n"
-        "Carga el dataset, configura la ejecución y descarga los resultados. "
-        "El entrenamiento utiliza siempre el archivo completo."
+        "Entrena el modelo una vez y luego genera diferentes cantidades de datos "
+        "sintéticos sin repetir el entrenamiento."
     )
 
-    with gr.Row():
-        with gr.Column(scale=5):
-            csv_input = gr.File(label="Dataset real (.csv)", file_types=[".csv"], type="filepath")
-            file_status = gr.Markdown("Carga un archivo CSV para comenzar.")
-            real_preview = gr.Dataframe(label="Vista previa del dataset", interactive=False)
+    trained_model_state = gr.State(value=None)
 
-        with gr.Column(scale=4):
-            gr.Markdown("### Parámetros del modelo")
-            epochs = gr.Number(label="Épocas", value=300, minimum=1, precision=0)
-            batch_size = gr.Dropdown(label="Batch size", choices=[16, 32, 64, 128], value=32)
-            embedding_dim = gr.Dropdown(label="Embedding", choices=[64, 128, 256], value=128)
-            seed = gr.Number(label="Semilla", value=42, minimum=0, precision=0)
-            synthetic_rows = gr.Number(
-                label="Registros sintéticos (0 = misma cantidad del dataset)",
-                value=0,
-                minimum=0,
-                precision=0,
+    with gr.Tab("1 · Entrenar modelo"):
+        gr.Markdown(
+            "### Entrenamiento\nCarga el dataset real, define los parámetros y entrena TVAE. "
+            "Esta etapa no genera datos sintéticos."
+        )
+        with gr.Row():
+            with gr.Column(scale=5):
+                csv_input = gr.File(
+                    label="Dataset real (.csv)", file_types=[".csv"], type="filepath"
+                )
+                file_status = gr.Markdown("Carga un archivo CSV para comenzar.")
+                real_preview = gr.Dataframe(label="Vista previa del dataset", interactive=False)
+
+            with gr.Column(scale=4):
+                gr.Markdown("### Parámetros de entrenamiento")
+                epochs = gr.Number(label="Épocas", value=300, minimum=1, precision=0)
+                batch_size = gr.Dropdown(
+                    label="Batch size", choices=[16, 32, 64, 128], value=32
+                )
+                embedding_dim = gr.Dropdown(
+                    label="Embedding", choices=[64, 128, 256], value=128
+                )
+                seed = gr.Number(label="Semilla", value=42, minimum=0, precision=0)
+                train_button = gr.Button(
+                    "Entrenar modelo", variant="primary", elem_classes="primary-btn"
+                )
+
+        training_status = gr.Markdown(
+            "Aún no se ha iniciado el entrenamiento.", elem_classes="status-box"
+        )
+        with gr.Row():
+            trained_model_download = gr.File(label="Descargar modelo entrenado")
+            training_config_download = gr.File(label="Descargar configuración del entrenamiento")
+
+    with gr.Tab("2 · Generar datos"):
+        gr.Markdown(
+            "### Generación\nUtiliza el modelo recién entrenado o carga un archivo `.pkl`. "
+            "Puedes repetir esta etapa con distintas cantidades sin reentrenar."
+        )
+        with gr.Row():
+            with gr.Column(scale=4):
+                uploaded_model = gr.File(
+                    label="Modelo TVAE guardado (.pkl) · opcional",
+                    file_types=[".pkl"],
+                    type="filepath",
+                )
+                synthetic_rows = gr.Number(
+                    label="Cantidad de registros sintéticos a generar",
+                    value=14359,
+                    minimum=1,
+                    precision=0,
+                )
+                generate_button = gr.Button(
+                    "Generar datos sintéticos",
+                    variant="primary",
+                    elem_classes="primary-btn",
+                )
+            with gr.Column(scale=5):
+                generation_status = gr.Markdown(
+                    "Primero entrena un modelo o carga un modelo guardado.",
+                    elem_classes="status-box",
+                )
+                synthetic_preview = gr.Dataframe(
+                    label="Vista previa de los datos sintéticos", interactive=False
+                )
+
+        with gr.Row():
+            synthetic_csv_download = gr.File(label="Descargar CSV sintético")
+            generation_archive_download = gr.File(
+                label="Descargar resultados y configuración (.zip)"
             )
-            run_button = gr.Button("Entrenar y generar", variant="primary", elem_classes="primary-btn")
-
-    gr.Markdown("### Ejecución y resultados")
-    with gr.Row():
-        status = gr.Markdown("Aún no se ha iniciado una ejecución.", elem_classes="status-box")
-        synthetic_preview = gr.Dataframe(label="Vista previa sintética", interactive=False)
-    result_file = gr.File(label="Descargar resultados completos")
 
     csv_input.change(inspect_csv, inputs=csv_input, outputs=[file_status, real_preview])
-    run_button.click(
-        generate_tvae,
-        inputs=[csv_input, epochs, batch_size, embedding_dim, seed, synthetic_rows],
-        outputs=[status, synthetic_preview, result_file],
+    train_button.click(
+        train_tvae,
+        inputs=[csv_input, epochs, batch_size, embedding_dim, seed],
+        outputs=[
+            training_status,
+            trained_model_download,
+            trained_model_state,
+            training_config_download,
+        ],
+    )
+    generate_button.click(
+        generate_synthetic_data,
+        inputs=[trained_model_state, uploaded_model, synthetic_rows],
+        outputs=[
+            generation_status,
+            synthetic_preview,
+            synthetic_csv_download,
+            generation_archive_download,
+        ],
     )
 
 
