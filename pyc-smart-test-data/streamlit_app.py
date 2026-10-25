@@ -107,17 +107,48 @@ def assess_seven(original,synth):
     met7=100*np.mean([str(original[c].dtype)==str(synth[c].dtype) for c in original.columns]) if len(original.columns) else np.nan
     return dict(zip(METRIC_DESCRIPTIONS,[met1,met2,met3,met4,met5,met6,met7]))
 
+def default_dictionary(tables):
+    rows=[]
+    for entity,df in tables.items():
+        for col in df.columns:
+            role="Clave primaria" if col==entity[:-1]+"_id" or (entity=="clientes" and col=="cliente_id") else ("Clave foránea" if col.endswith("_id") else ("Numérica" if pd.api.types.is_numeric_dtype(df[col]) else "Categórica"))
+            rows.append({"Entidad":entity,"Columna":col,"Rol":role,"Confidencial":"No","Tratamiento":"Excluir" if role in ["Clave primaria","Clave foránea"] else "Sintetizar","Aprobado":False})
+    return pd.DataFrame(rows)
+
+def dictionary_ready():
+    d=st.session_state.get("dictionary")
+    return d is not None and len(d)>0 and bool(d["Aprobado"].all())
+
+def validate_dictionary(tables,d):
+    expected={(e,c) for e,frame in tables.items() for c in frame.columns}
+    actual=set(zip(d["Entidad"],d["Columna"]))
+    errors=[]
+    if expected!=actual:errors.append("El diccionario no coincide con las columnas de la base activa.")
+    if d.duplicated(["Entidad","Columna"]).any():errors.append("Hay columnas duplicadas.")
+    if not bool(d["Aprobado"].all()):errors.append("Faltan columnas por revisar y aprobar.")
+    if ((d["Confidencial"]=="Sí") & (d["Tratamiento"]=="Conservar")).any():errors.append("No se puede conservar una columna confidencial en una demo pública.")
+    return errors
+
+def validate_counts(client_count,sales_count,invoice_count,payment_count):
+    errors=[]
+    if sales_count<client_count:errors.append("Para el generador actual cada cliente tiene al menos una venta.")
+    if invoice_count>sales_count:errors.append("No puede haber más facturas que ventas en el esquema actual 1:0..1.")
+    if payment_count>invoice_count:errors.append("El generador actual admite como máximo un pago por factura.")
+    if payment_count<0:errors.append("Los pagos no pueden ser negativos.")
+    return errors
+
 if "tables" not in st.session_state:st.session_state.tables=build_data()
 if "runs" not in st.session_state:st.session_state.runs=[]
 if "models" not in st.session_state:st.session_state.models=[]
-page=st.sidebar.radio("Secciones",["Base de datos","Exploración","Entrenamiento","Generación","Comparar experimentos","7 métricas QE"])
+if "dictionary" not in st.session_state:st.session_state.dictionary=default_dictionary(st.session_state.tables)
+page=st.sidebar.radio("Secciones",["Base de datos","Diccionario y privacidad","Exploración","Entrenamiento","Generación","Comparar experimentos","7 métricas QE"])
 t=st.session_state.tables
 if page=="Base de datos":
     st.subheader("Modelo: Clientes → Ventas → Facturas → Pagos")
     n=st.number_input("Clientes ficticios",min_value=50,max_value=2000,value=250,step=50)
     seed=st.number_input("Semilla",min_value=0,value=42)
     if st.button("Crear base de datos ficticia"):
-        st.session_state.tables=build_data(int(n),int(seed));st.rerun()
+        st.session_state.tables=build_data(int(n),int(seed));st.session_state.dictionary=default_dictionary(st.session_state.tables);st.session_state.models=[];st.session_state.runs=[];st.rerun()
     conn=save_sqlite(t)
     table=st.selectbox("Entidad",list(t))
     st.dataframe(pd.read_sql_query("SELECT * FROM "+table+" LIMIT 100",conn),use_container_width=True)
@@ -132,6 +163,24 @@ if page=="Base de datos":
         os.unlink(path)
     st.download_button("Descargar SQLite",buf.getvalue(),"pyc_demo.sqlite","application/x-sqlite3")
     st.info("Los datos de ejemplo son inventados. Puedes seleccionar y leer cada entidad desde SQLite.")
+elif page=="Diccionario y privacidad":
+    st.subheader("Definición de columnas, relaciones y confidencialidad")
+    st.warning("Antes de entrenar debes revisar y aprobar TODAS las columnas. No subas información personal real a esta aplicación pública. Esta clasificación no representa anonimización ni garantiza privacidad.")
+    st.markdown("**Rol:** clave primaria, clave foránea, numérica o categórica. **Confidencial:** dato que requiere medidas especiales. **Tratamiento:** sintetizar, excluir o conservar (solo datos no confidenciales).")
+    edited=st.data_editor(st.session_state.dictionary,num_rows="fixed",hide_index=True,use_container_width=True,disabled=["Entidad","Columna"],column_config={
+        "Rol":st.column_config.SelectboxColumn("Rol",options=["Clave primaria","Clave foránea","Numérica","Categórica"]),
+        "Confidencial":st.column_config.SelectboxColumn("Confidencial",options=["Sí","No"]),
+        "Tratamiento":st.column_config.SelectboxColumn("Tratamiento",options=["Sintetizar","Excluir","Conservar"]),
+        "Aprobado":st.column_config.CheckboxColumn("Revisado y aprobado")},key="dictionary_editor")
+    if st.button("Validar y guardar definiciones"):
+        errors=validate_dictionary(t,edited)
+        st.session_state.dictionary=edited.copy()
+        if errors:st.error("; ".join(errors))
+        else:
+            st.session_state.models=[]
+            st.session_state.runs=[]
+            st.success("Diccionario validado. Puedes entrenar. Los modelos anteriores de la sesión se invalidaron al modificar la clasificación.")
+    st.caption("El motor actual únicamente sintetiza columnas no identificadoras de Clientes; no admite todavía entrenar las cuatro entidades como un modelo relacional. Los tratamientos se validan como política de acceso y se debe implementar su aplicación efectiva antes de aceptar datos reales.")
 elif page=="Exploración":
     name=st.selectbox("Entidad",list(t))
     df=t[name]
@@ -169,6 +218,12 @@ elif page=="Entrenamiento":
         rounding=st.checkbox("Conservar redondeo numérico",value=True,help="Intenta devolver los valores numéricos con una precisión equivalente a la de origen.")
         st.caption("La semilla es reproducibilidad, no calidad. El número de filas sintéticas se define en Generación y NO requiere reentrenar.")
     if st.button("Entrenar y guardar modelo",type="primary"):
+        if not dictionary_ready() or validate_dictionary(t,st.session_state.dictionary):
+            st.error("Revisa y aprueba el diccionario de columnas en Diccionario y privacidad antes de entrenar.")
+            st.stop()
+        if (st.session_state.dictionary["Confidencial"]=="Sí").any():
+            st.error("El motor actual no dispone de controles suficientes para aceptar columnas marcadas como confidenciales. Usa datos ficticios o excluye esas columnas de la fuente antes de entrenar.")
+            st.stop()
         source=t["clientes"].drop(columns=["cliente_id"])
         meta=SingleTableMetadata();meta.detect_from_dataframe(data=source)
         dims=tuple(int(v) for v in layers.split(" × "))
@@ -178,7 +233,7 @@ elif page=="Entrenamiento":
                 torch.manual_seed(int(seed));np.random.seed(int(seed))
                 model=TVAESynthesizer(meta,epochs=int(epochs),batch_size=int(batch),embedding_dim=int(embedding),compress_dims=dims,decompress_dims=dims,l2scale=float(l2),loss_factor=int(loss),enforce_min_max_values=minmax,enforce_rounding=rounding,enable_gpu=False)
                 start=time.perf_counter();model.fit(source);duration=time.perf_counter()-start
-                st.session_state.models.append({"name":experiment_name,"model":model,"train_sec":round(duration,2),"params":{"épocas":epochs,"batch":batch,"embedding":embedding,"capas":layers,"L2":l2,"loss":loss,"semilla":seed,"minmax":minmax,"rounding":rounding}})
+                st.session_state.models.append({"name":experiment_name,"model":model,"train_sec":round(duration,2),"params":{"épocas":epochs,"batch":batch,"embedding":embedding,"capas":layers,"L2":l2,"loss":loss,"semilla":seed,"minmax":minmax,"rounding":rounding,"diccionario":st.session_state.dictionary.to_json(orient="records")}})
                 st.success(f"Modelo '{experiment_name}' entrenado y guardado en esta sesión. Tiempo: {duration:.2f} s.")
             except Exception as exc:st.error(f"Error de entrenamiento: {exc}")
     if st.session_state.models:
@@ -193,7 +248,10 @@ elif page=="Generación":
         st.warning("No hay modelos entrenados. Primero entra a la sección Entrenamiento.")
     else:
         model_idx=st.selectbox("Modelo entrenado",list(range(len(st.session_state.models))),format_func=lambda i:f"{st.session_state.models[i]['name']} · {st.session_state.models[i]['params']['épocas']} épocas")
-        qty=st.slider("Cantidad de clientes sintéticos",50,2000,250,step=50,help="Número de filas solicitadas al modelo entrenado. Cambiar este número no afecta los pesos del modelo ni exige reentrenamiento.")
+        qty=st.slider("Cantidad de clientes sintéticos",50,2000,250,step=50,help="Número de clientes. La cantidad de entidades dependientes debe respetar relaciones y reglas.")
+        st.markdown("**Cantidades relacionadas:** cada cliente tendrá entre 1 y 3 ventas; cada venta genera una factura, y cada factura puede tener 0 o 1 pago en esta versión. No se configuran cantidades imposibles ni se inventan registros huérfanos.")
+        estimated_min,estimated_max=qty,qty*3
+        st.caption(f"Ventas y facturas esperadas: entre {estimated_min} y {estimated_max}. Pagos: entre 0 y el total de facturas.")
         batch_name=st.text_input("Nombre del dataset generado",f"Generación {len(st.session_state.runs)+1}")
         if st.button("Generar datos con el modelo seleccionado",type="primary"):
             with st.spinner("Generando datos nuevos..."):
@@ -207,9 +265,10 @@ elif page=="Generación":
                     synthetic=build_data(int(qty),int(len(st.session_state.runs)+100))
                     synthetic["clientes"]=generated[["cliente_id","segmento","region","nivel_riesgo","edad"]]
                     score=100*max(0,1-abs(float(t["clientes"].edad.mean())-float(generated.edad.mean()))/max(float(t["clientes"].edad.mean()),1))
-                    run={"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic}
+                    run={"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic,"params":selected["params"].copy(),"dataset_role":"clientes TVAE; resto reglas relacionales"}
                     st.session_state.runs.append(run)
                     st.success(f"Dataset '{batch_name}' generado en {generation:.2f}s, sin reentrenar. Integridad básica: {verify(synthetic)}")
+                    st.write("Entidades resultantes:",{k:len(v) for k,v in synthetic.items()})
                 except Exception as exc:st.error(f"No se pudo generar: {exc}")
         if st.session_state.runs:
             idx=st.selectbox("Dataset generado para inspeccionar",list(range(len(st.session_state.runs))),format_func=lambda i:f"{st.session_state.runs[i]['nombre']} · {st.session_state.runs[i]['modelo']}")
@@ -224,6 +283,8 @@ elif page=="Comparar experimentos":
     else:
         rows=[{k:v for k,v in x.items() if k!="tables"} for x in st.session_state.runs]
         df=pd.DataFrame(rows);st.dataframe(df,use_container_width=True)
+        st.markdown("**Parámetros asociados a cada dataset generado**")
+        st.dataframe(pd.DataFrame([{"Experimento":x["nombre"],"Modelo":x["modelo"],**x.get("params",{})} for x in st.session_state.runs]).drop(columns=["diccionario"],errors="ignore"),use_container_width=True)
         st.plotly_chart(px.line(df.reset_index(),x="index",y=["edad_media_similitud"],markers=True,title="Indicador orientativo por experimento"),use_container_width=True)
         chosen=st.selectbox("Experimento",range(len(st.session_state.runs)),format_func=lambda i:f"Experimento {i+1}")
         syn=st.session_state.runs[chosen]["tables"]["clientes"]
@@ -242,6 +303,8 @@ elif page=="7 métricas QE":
         name=st.selectbox("Entidad",list(t))
         real=t[name];synt=st.session_state.runs[idx]["tables"][name]
         scores=assess_seven(real,synt)
+        st.markdown("**Parámetros del modelo que produjo este dataset:**")
+        st.json({k:v for k,v in st.session_state.runs[idx].get("params",{}).items() if k!="diccionario"})
         metric_rows=[{"Métrica":k,"Puntuación (0–100)":round(v,2) if pd.notna(v) else None,"Qué evalúa":METRIC_DESCRIPTIONS[k]} for k,v in scores.items()]
         df=pd.DataFrame(metric_rows)
         st.dataframe(df,use_container_width=True,hide_index=True)
