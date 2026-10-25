@@ -9,9 +9,19 @@ import streamlit as st
 from sdv.metadata import SingleTableMetadata
 from sdv.single_table import TVAESynthesizer
 
-st.set_page_config(page_title="PyC Smart Test Data Lab", layout="wide")
-st.title("PyC Smart Test Data Lab")
-st.caption("Demostración comercial · Datos ficticios · TVAE real sobre tabla Clientes")
+st.set_page_config(page_title="PyC Smart Test Data Lab", page_icon="🧪", layout="wide")
+st.markdown("""<style>
+.block-container{padding-top:1.2rem;max-width:1400px}
+[data-testid="stSidebar"]{background:#172658}
+[data-testid="stSidebar"] *{color:#fff!important}
+.hero{background:linear-gradient(125deg,#172658,#2f4f9d);color:white;padding:28px;border-radius:20px;margin-bottom:22px}
+.hero h1{color:white;margin:0;font-size:2.2rem}
+.hero p{color:#dbe6ff;margin:8px 0 0}
+.wordmark{background:white;color:#344b9f;display:inline-block;padding:8px 22px;border-radius:12px;font:italic 700 32px Georgia;margin-bottom:12px}
+.section{padding:10px 0;font-weight:700;color:#172658;font-size:1.2rem}
+</style>""",unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="wordmark">PyC</div><h1>Smart Test Data Lab</h1><p>Calidad de datos · Inteligencia sintética · Comparación de escenarios</p></div>',unsafe_allow_html=True)
+st.caption("PoC · Datos 100% ficticios · TVAE sobre clientes; entidades dependientes generadas mediante reglas")
 
 def build_data(n=250, seed=42):
     rng=np.random.default_rng(seed)
@@ -49,9 +59,57 @@ def verify(t):
     c=t["pagos"].factura_id.isin(t["facturas"].factura_id).all()
     return bool(a and b and c)
 
+
+METRIC_DESCRIPTIONS={
+"MET1":"Fidelidad estadística: similitud de correlaciones entre variables numéricas comparables.",
+"MET2":"Diversidad categórica: cobertura de categorías y adherencia a los dominios observados.",
+"MET3":"Coherencia estructural: columnas y proporción de nulos comparables.",
+"MET4":"Reproducción directa: tasa de registros sintéticos sin copia exacta del original; NO garantiza privacidad.",
+"MET5":"Outliers: similitud de tasas fuera de los límites definidos por media ± 3 desviaciones.",
+"MET6":"Utilidad potencial QA: cobertura de rangos y respeto de límites; NO demuestra utilidad funcional.",
+"MET7":"Compatibilidad técnica: columnas compartidas y coincidencia de tipos físicos."
+}
+def assess_seven(original,synth):
+    """Métricas orientativas, no reproducción exacta del evaluador del Capstone."""
+    numeric=[c for c in original.select_dtypes(include="number").columns if c in synth.columns and pd.api.types.is_numeric_dtype(synth[c]) and not c.endswith("_id")]
+    cat=[c for c in original.columns if c in synth.columns and c not in numeric and not c.endswith("_id")]
+    common=[c for c in original.columns if c in synth.columns]
+    if len(numeric)>=2:
+        a=original[numeric].corr().fillna(0).to_numpy()
+        b=synth[numeric].corr().fillna(0).to_numpy()
+        met1=100*max(0,1-float(np.mean(abs(a-b)))/2)
+    else:met1=np.nan
+    vals=[]
+    for c in cat:
+        r=set(original[c].dropna().astype(str)); q=set(synth[c].dropna().astype(str))
+        if r and q:vals.append((len(r&q)/len(r)+len(r&q)/len(q))/2)
+    met2=100*np.mean(vals) if vals else np.nan
+    null_sim=np.mean([1-abs(original[c].isna().mean()-synth[c].isna().mean()) for c in common])
+    met3=100*(len(common)/len(original.columns)+null_sim)/2
+    cols=[c for c in common if not c.endswith("_id")]
+    real_rows=set(map(tuple,original[cols].fillna("<NA>").astype(str).to_numpy())) if cols else set()
+    copies=sum(tuple(x) in real_rows for x in synth[cols].fillna("<NA>").astype(str).to_numpy()) if cols else 0
+    met4=100*(1-copies/max(len(synth),1))
+    deviations=[];ranges=[]
+    for c in numeric:
+        r=pd.to_numeric(original[c],errors="coerce").dropna()
+        q=pd.to_numeric(synth[c],errors="coerce").dropna()
+        if len(r)<2 or len(q)==0:continue
+        mean,sd=r.mean(),r.std()
+        deviations.append(abs(((r<mean-3*sd)|(r>mean+3*sd)).mean()-((q<mean-3*sd)|(q>mean+3*sd)).mean()))
+        low,high=r.min(),r.max()
+        span=max(float(high-low),1e-9)
+        coverage=max(0,min(high,q.max())-max(low,q.min()))/span
+        adherence=((q>=low)&(q<=high)).mean()
+        ranges.append(.7*coverage+.3*adherence)
+    met5=100*max(0,1-10*np.mean(deviations)) if deviations else np.nan
+    met6=100*np.mean(ranges) if ranges else np.nan
+    met7=100*np.mean([str(original[c].dtype)==str(synth[c].dtype) for c in original.columns]) if len(original.columns) else np.nan
+    return dict(zip(METRIC_DESCRIPTIONS,[met1,met2,met3,met4,met5,met6,met7]))
+
 if "tables" not in st.session_state:st.session_state.tables=build_data()
 if "runs" not in st.session_state:st.session_state.runs=[]
-page=st.sidebar.radio("Secciones",["Base de datos","Exploración","Entrenar y generar","Comparar experimentos"])
+page=st.sidebar.radio("Secciones",["Base de datos","Exploración","Entrenar y generar","Comparar experimentos","7 métricas QE"])
 t=st.session_state.tables
 if page=="Base de datos":
     st.subheader("Modelo: Clientes → Ventas → Facturas → Pagos")
@@ -127,3 +185,32 @@ elif page=="Comparar experimentos":
         joined=pd.concat([orig.assign(origen="Original"),syn.assign(origen="Sintético")])
         st.plotly_chart(px.histogram(joined,x="edad",color="origen",barmode="overlay"),use_container_width=True)
         st.caption("Esta comparación es ilustrativa, no reproduce las siete métricas completas del Capstone ni certifica privacidad.")
+
+elif page=="7 métricas QE":
+    st.subheader("Siete mediciones: datos originales frente a sintéticos")
+    st.info("Métricas demostrativas de las dimensiones del Capstone. No equivalen a evaluación de privacidad ni a certificación funcional.")
+    if not st.session_state.runs:
+        st.warning("Ejecuta primero un entrenamiento y una generación en la sección 'Entrenar y generar'.")
+    else:
+        idx=st.selectbox("Experimento",list(range(len(st.session_state.runs))),format_func=lambda i:f"Experimento {i+1} · {st.session_state.runs[i]['epochs']} épocas")
+        name=st.selectbox("Entidad",list(t))
+        real=t[name];synt=st.session_state.runs[idx]["tables"][name]
+        scores=assess_seven(real,synt)
+        metric_rows=[{"Métrica":k,"Puntuación (0–100)":round(v,2) if pd.notna(v) else None,"Qué evalúa":METRIC_DESCRIPTIONS[k]} for k,v in scores.items()]
+        df=pd.DataFrame(metric_rows)
+        st.dataframe(df,use_container_width=True,hide_index=True)
+        plot=df.dropna(subset=["Puntuación (0–100)"])
+        st.plotly_chart(px.bar(plot,x="Métrica",y="Puntuación (0–100)",title="Indicadores originales vs sintéticos",range_y=[0,100]),use_container_width=True)
+        a,b=st.columns(2)
+        with a:
+            st.markdown("**Datos originales**")
+            st.dataframe(real.head(40),use_container_width=True)
+        with b:
+            st.markdown("**Datos sintéticos**")
+            st.dataframe(synt.head(40),use_container_width=True)
+        common=[c for c in real.select_dtypes(include="number").columns if c in synt.columns and pd.api.types.is_numeric_dtype(synt[c])]
+        if common:
+            field=st.selectbox("Variable numérica a comparar",common)
+            combined=pd.concat([real[[field]].assign(Dataset="Original"),synt[[field]].assign(Dataset="Sintético")],ignore_index=True)
+            st.plotly_chart(px.histogram(combined,x=field,color="Dataset",barmode="overlay",marginal="box",title="Distribución comparada"),use_container_width=True)
+        st.caption("Los identificadores de entidades reconstruidas no se comparan como registros equivalentes. MET1, MET5 y MET6 requieren variables numéricas de negocio y pueden no aplicar a todas las entidades.")
