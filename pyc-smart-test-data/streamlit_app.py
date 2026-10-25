@@ -26,6 +26,10 @@ st.caption("PoC · Datos 100% ficticios · TVAE sobre clientes; entidades depend
 def build_data(n=250, seed=42):
     rng=np.random.default_rng(seed)
     clientes=pd.DataFrame({
+        "nombre_cliente":[f"Cliente Demostración {i+1:05d}" for i in range(n)],
+        "direccion":[f"Calle Ficticia {i+1}, Sector Demo" for i in range(n)],
+        "email":[f"demo{i+1:05d}@example.invalid" for i in range(n)],
+        "telefono":[f"000-{i+1:07d}" for i in range(n)],
         "cliente_id":np.arange(1,n+1),
         "segmento":rng.choice(["Personas","Pyme","Empresa"],n,p=[.62,.28,.10]),
         "region":rng.choice(["Lima","Arequipa","Cusco","Trujillo"],n),
@@ -107,12 +111,15 @@ def assess_seven(original,synth):
     met7=100*np.mean([str(original[c].dtype)==str(synth[c].dtype) for c in original.columns]) if len(original.columns) else np.nan
     return dict(zip(METRIC_DESCRIPTIONS,[met1,met2,met3,met4,met5,met6,met7]))
 
+CONFIDENTIAL_FIELDS={"nombre_cliente","direccion","email","telefono"}
+DOMAINS={"segmento":"Personas,Pyme,Empresa","region":"Lima,Arequipa,Cusco,Trujillo","nivel_riesgo":"Bajo,Medio,Alto","canal":"Web,Sucursal,App","estado":"Pendiente,Pagada,Parcial"}
+
 def default_dictionary(tables):
     rows=[]
     for entity,df in tables.items():
         for col in df.columns:
             role="Clave primaria" if col==entity[:-1]+"_id" or (entity=="clientes" and col=="cliente_id") else ("Clave foránea" if col.endswith("_id") else ("Numérica" if pd.api.types.is_numeric_dtype(df[col]) else "Categórica"))
-            rows.append({"Entidad":entity,"Columna":col,"Rol":role,"Confidencial":"No","Tratamiento":"Excluir" if role in ["Clave primaria","Clave foránea"] else "Sintetizar","Aprobado":False})
+            rows.append({"Entidad":entity,"Columna":col,"Rol":role,"Confidencial":"Sí" if col in CONFIDENTIAL_FIELDS else "No","Tratamiento":"Generar ficticio" if col in CONFIDENTIAL_FIELDS else ("Excluir" if role in ["Clave primaria","Clave foránea"] else "Sintetizar"),"Dominio permitido":DOMAINS.get(col,""),"Aprobado":False})
     return pd.DataFrame(rows)
 
 def dictionary_ready():
@@ -127,6 +134,13 @@ def validate_dictionary(tables,d):
     if d.duplicated(["Entidad","Columna"]).any():errors.append("Hay columnas duplicadas.")
     if not bool(d["Aprobado"].all()):errors.append("Faltan columnas por revisar y aprobar.")
     if ((d["Confidencial"]=="Sí") & (d["Tratamiento"]=="Conservar")).any():errors.append("No se puede conservar una columna confidencial en una demo pública.")
+    for row in d.itertuples(index=False):
+        dom=str(getattr(row,"_6","") or "") if False else str(row[d.columns.get_loc("Dominio permitido")])
+        if row[d.columns.get_loc("Rol")]=="Categórica" and dom.strip():
+            entity,col=row[0],row[1]
+            actual_values=set(tables[entity][col].dropna().astype(str).unique())
+            allowed={v.strip() for v in dom.split(",") if v.strip()}
+            if not actual_values.issubset(allowed):errors.append(f"{entity}.{col}: hay valores fuera del dominio permitido")
     return errors
 
 def validate_counts(client_count,sales_count,invoice_count,payment_count):
@@ -166,11 +180,12 @@ if page=="Base de datos":
 elif page=="Diccionario y privacidad":
     st.subheader("Definición de columnas, relaciones y confidencialidad")
     st.warning("Antes de entrenar debes revisar y aprobar TODAS las columnas. No subas información personal real a esta aplicación pública. Esta clasificación no representa anonimización ni garantiza privacidad.")
-    st.markdown("**Rol:** clave primaria, clave foránea, numérica o categórica. **Confidencial:** dato que requiere medidas especiales. **Tratamiento:** sintetizar, excluir o conservar (solo datos no confidenciales).")
+    st.markdown("**Rol:** clave primaria, clave foránea, numérica o categórica. **Confidencial:** dato que requiere medidas especiales. **Tratamiento:** sintetizar, generar ficticio, excluir o conservar (solo datos no confidenciales). Los dominios se expresan como códigos separados por comas.")
     edited=st.data_editor(st.session_state.dictionary,num_rows="fixed",hide_index=True,use_container_width=True,disabled=["Entidad","Columna"],column_config={
         "Rol":st.column_config.SelectboxColumn("Rol",options=["Clave primaria","Clave foránea","Numérica","Categórica"]),
         "Confidencial":st.column_config.SelectboxColumn("Confidencial",options=["Sí","No"]),
-        "Tratamiento":st.column_config.SelectboxColumn("Tratamiento",options=["Sintetizar","Excluir","Conservar"]),
+        "Tratamiento":st.column_config.SelectboxColumn("Tratamiento",options=["Sintetizar","Generar ficticio","Excluir","Conservar"]),
+        "Dominio permitido":st.column_config.TextColumn("Dominio permitido"),
         "Aprobado":st.column_config.CheckboxColumn("Revisado y aprobado")},key="dictionary_editor")
     if st.button("Validar y guardar definiciones"):
         errors=validate_dictionary(t,edited)
@@ -180,7 +195,7 @@ elif page=="Diccionario y privacidad":
             st.session_state.models=[]
             st.session_state.runs=[]
             st.success("Diccionario validado. Puedes entrenar. Los modelos anteriores de la sesión se invalidaron al modificar la clasificación.")
-    st.caption("El motor actual únicamente sintetiza columnas no identificadoras de Clientes; no admite todavía entrenar las cuatro entidades como un modelo relacional. Los tratamientos se validan como política de acceso y se debe implementar su aplicación efectiva antes de aceptar datos reales.")
+    st.caption("El motor sintetiza los campos no sensibles de Clientes. Nombre, dirección, email y teléfono se generan con valores ficticios nuevos, no los aprende TVAE. Dominio permitido se valida sobre la fuente; la generación también debe comprobarse. Esta PoC no acepta datos reales ni ofrece privacidad certificada.")
 elif page=="Exploración":
     name=st.selectbox("Entidad",list(t))
     df=t[name]
@@ -221,10 +236,7 @@ elif page=="Entrenamiento":
         if not dictionary_ready() or validate_dictionary(t,st.session_state.dictionary):
             st.error("Revisa y aprueba el diccionario de columnas en Diccionario y privacidad antes de entrenar.")
             st.stop()
-        if (st.session_state.dictionary["Confidencial"]=="Sí").any():
-            st.error("El motor actual no dispone de controles suficientes para aceptar columnas marcadas como confidenciales. Usa datos ficticios o excluye esas columnas de la fuente antes de entrenar.")
-            st.stop()
-        source=t["clientes"].drop(columns=["cliente_id"])
+        source=t["clientes"].drop(columns=["cliente_id"]+[c for c in CONFIDENTIAL_FIELDS if c in t["clientes"]])
         meta=SingleTableMetadata();meta.detect_from_dataframe(data=source)
         dims=tuple(int(v) for v in layers.split(" × "))
         with st.spinner("Entrenando TVAE (esta etapa puede tomar tiempo)..."):
@@ -262,13 +274,20 @@ elif page=="Generación":
                     generation=time.perf_counter()-start
                     generated["edad"]=pd.to_numeric(generated["edad"],errors="coerce").fillna(40).clip(18,100).astype(int)
                     generated["cliente_id"]=np.arange(1,len(generated)+1)
+                    generated["nombre_cliente"]=[f"Sintético {i+1:05d}" for i in range(len(generated))]
+                    generated["direccion"]=[f"Avenida Inventada {i+1}, Distrito Prueba" for i in range(len(generated))]
+                    generated["email"]=[f"sintetico{i+1:05d}@example.invalid" for i in range(len(generated))]
+                    generated["telefono"]=[f"999-{i+1:07d}" for i in range(len(generated))]
                     synthetic=build_data(int(qty),int(len(st.session_state.runs)+100))
-                    synthetic["clientes"]=generated[["cliente_id","segmento","region","nivel_riesgo","edad"]]
+                    synthetic["clientes"]=generated[t["clientes"].columns.tolist()]
+                    conf_check={c:len(set(t["clientes"][c].astype(str)) & set(synthetic["clientes"][c].astype(str))) for c in CONFIDENTIAL_FIELDS if c in t["clientes"]}
+                    if any(conf_check.values()):raise ValueError(f"Coincidencias confidenciales detectadas: {conf_check}")
                     score=100*max(0,1-abs(float(t["clientes"].edad.mean())-float(generated.edad.mean()))/max(float(t["clientes"].edad.mean()),1))
                     run={"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic,"params":selected["params"].copy(),"dataset_role":"clientes TVAE; resto reglas relacionales"}
                     st.session_state.runs.append(run)
                     st.success(f"Dataset '{batch_name}' generado en {generation:.2f}s, sin reentrenar. Integridad básica: {verify(synthetic)}")
                     st.write("Entidades resultantes:",{k:len(v) for k,v in synthetic.items()})
+                    st.write("Coincidencias exactas en columnas confidenciales:",conf_check)
                 except Exception as exc:st.error(f"No se pudo generar: {exc}")
         if st.session_state.runs:
             idx=st.selectbox("Dataset generado para inspeccionar",list(range(len(st.session_state.runs))),format_func=lambda i:f"{st.session_state.runs[i]['nombre']} · {st.session_state.runs[i]['modelo']}")
@@ -303,6 +322,11 @@ elif page=="7 métricas QE":
         name=st.selectbox("Entidad",list(t))
         real=t[name];synt=st.session_state.runs[idx]["tables"][name]
         scores=assess_seven(real,synt)
+        if name=="clientes":
+            confidentiality=pd.DataFrame([{"Columna":c,"Coincidencias originales-sintéticas":len(set(real[c].astype(str))&set(synt[c].astype(str)))} for c in CONFIDENTIAL_FIELDS if c in real.columns and c in synt.columns])
+            st.markdown("**Control de confidencialidad por columna**")
+            st.dataframe(confidentiality,use_container_width=True,hide_index=True)
+            st.caption("Un cruce exacto igual a cero es un control inicial; no constituye prueba de anonimato ni de protección frente a inferencia.")
         st.markdown("**Parámetros del modelo que produjo este dataset:**")
         st.json({k:v for k,v in st.session_state.runs[idx].get("params",{}).items() if k!="diccionario"})
         metric_rows=[{"Métrica":k,"Puntuación (0–100)":round(v,2) if pd.notna(v) else None,"Qué evalúa":METRIC_DESCRIPTIONS[k]} for k,v in scores.items()]
