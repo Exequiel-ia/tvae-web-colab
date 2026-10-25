@@ -178,24 +178,45 @@ if page=="Base de datos":
     st.download_button("Descargar SQLite",buf.getvalue(),"pyc_demo.sqlite","application/x-sqlite3")
     st.info("Los datos de ejemplo son inventados. Puedes seleccionar y leer cada entidad desde SQLite.")
 elif page=="Diccionario y privacidad":
-    st.subheader("Definición de columnas, relaciones y confidencialidad")
-    st.warning("Antes de entrenar debes revisar y aprobar TODAS las columnas. No subas información personal real a esta aplicación pública. Esta clasificación no representa anonimización ni garantiza privacidad.")
-    st.markdown("**Rol:** clave primaria, clave foránea, numérica o categórica. **Confidencial:** dato que requiere medidas especiales. **Tratamiento:** sintetizar, generar ficticio, excluir o conservar (solo datos no confidenciales). Los dominios se expresan como códigos separados por comas.")
-    edited=st.data_editor(st.session_state.dictionary,num_rows="fixed",hide_index=True,use_container_width=True,disabled=["Entidad","Columna"],column_config={
-        "Rol":st.column_config.SelectboxColumn("Rol",options=["Clave primaria","Clave foránea","Numérica","Categórica"]),
-        "Confidencial":st.column_config.SelectboxColumn("Confidencial",options=["Sí","No"]),
-        "Tratamiento":st.column_config.SelectboxColumn("Tratamiento",options=["Sintetizar","Generar ficticio","Excluir","Conservar"]),
-        "Dominio permitido":st.column_config.TextColumn("Dominio permitido"),
-        "Aprobado":st.column_config.CheckboxColumn("Revisado y aprobado")},key="dictionary_editor")
-    if st.button("Validar y guardar definiciones"):
-        errors=validate_dictionary(t,edited)
-        st.session_state.dictionary=edited.copy()
+    st.subheader("Configurar datos por tabla")
+    st.write("**1. Elige la tabla. 2. Revisa las columnas y sus valores. 3. Clasifica las columnas que quieras proteger o controlar. 4. Guarda la configuración de esa tabla.**")
+    st.info("Puedes configurar una tabla a la vez. Nombre, email, dirección y teléfono aparecen sugeridos como confidenciales. No subas datos personales reales a esta demo pública.")
+    entity=st.selectbox("Tabla que deseas configurar",list(t),format_func=lambda x:x.capitalize(),key="dictionary_entity")
+    df=t[entity]
+    st.markdown(f"**Vista previa de {entity}**")
+    st.dataframe(df.head(8),use_container_width=True,hide_index=True)
+    dic=st.session_state.dictionary.copy()
+    scope=dic[dic["Entidad"]==entity].copy()
+    scope["Ejemplos"]=[", ".join(df[c].dropna().astype(str).head(3).tolist()) for c in scope["Columna"]]
+    st.markdown("**Clasifica las columnas de esta tabla**")
+    edited=st.data_editor(scope,hide_index=True,num_rows="fixed",use_container_width=True,disabled=["Entidad","Columna","Ejemplos"],column_config={
+        "Rol":st.column_config.SelectboxColumn("Tipo de columna",options=["Clave primaria","Clave foránea","Numérica","Categórica"]),
+        "Confidencial":st.column_config.SelectboxColumn("¿Es confidencial?",options=["Sí","No"]),
+        "Tratamiento":st.column_config.SelectboxColumn("Qué hacer con el dato",options=["Sintetizar","Generar ficticio","Excluir","Conservar"]),
+        "Dominio permitido":st.column_config.TextColumn("Valores permitidos (separados por coma)"),
+        "Ejemplos":st.column_config.TextColumn("Ejemplos del original"),
+        "Aprobado":st.column_config.CheckboxColumn("Clasificación lista")
+    },key=f"dictionary_editor_{entity}")
+    if st.button(f"Guardar clasificación de {entity}",type="primary"):
+        updated=edited.drop(columns=["Ejemplos"])
+        candidate=dic[dic["Entidad"]!=entity]
+        candidate=pd.concat([candidate,updated],ignore_index=True)
+        errors=[]
+        if ((updated["Confidencial"]=="Sí") & (updated["Tratamiento"]=="Conservar")).any():errors.append("Una columna confidencial no puede conservarse sin tratamiento.")
+        for _,row in updated.iterrows():
+            if row["Rol"]=="Categórica" and str(row["Dominio permitido"]).strip():
+                allowed={z.strip() for z in str(row["Dominio permitido"]).split(",") if z.strip()}
+                observed=set(df[row["Columna"]].dropna().astype(str))
+                if not observed.issubset(allowed):errors.append(f"{row['Columna']}: hay valores originales fuera del dominio declarado")
         if errors:st.error("; ".join(errors))
         else:
+            st.session_state.dictionary=candidate
             st.session_state.models=[]
             st.session_state.runs=[]
-            st.success("Diccionario validado. Puedes entrenar. Los modelos anteriores de la sesión se invalidaron al modificar la clasificación.")
-    st.caption("El motor sintetiza los campos no sensibles de Clientes. Nombre, dirección, email y teléfono se generan con valores ficticios nuevos, no los aprende TVAE. Dominio permitido se valida sobre la fuente; la generación también debe comprobarse. Esta PoC no acepta datos reales ni ofrece privacidad certificada.")
+            st.success(f"Configuración de {entity} guardada.")
+    count=int(st.session_state.dictionary.groupby("Entidad")["Aprobado"].all().sum())
+    st.caption(f"Tablas completamente clasificadas: {count} de {len(t)}. La aprobación general se completa cuando todas las tablas quedan configuradas.")
+    st.warning("La PoC todavía solo entrena los campos no sensibles de Clientes. Los otros campos y entidades no están aún integrados en el aprendizaje relacional del modelo. La protección de datos reales requiere controles adicionales.")
 elif page=="Exploración":
     name=st.selectbox("Entidad",list(t))
     df=t[name]
