@@ -109,7 +109,8 @@ def assess_seven(original,synth):
 
 if "tables" not in st.session_state:st.session_state.tables=build_data()
 if "runs" not in st.session_state:st.session_state.runs=[]
-page=st.sidebar.radio("Secciones",["Base de datos","Exploración","Entrenar y generar","Comparar experimentos","7 métricas QE"])
+if "models" not in st.session_state:st.session_state.models=[]
+page=st.sidebar.radio("Secciones",["Base de datos","Exploración","Entrenamiento","Generación","Comparar experimentos","7 métricas QE"])
 t=st.session_state.tables
 if page=="Base de datos":
     st.subheader("Modelo: Clientes → Ventas → Facturas → Pagos")
@@ -141,40 +142,85 @@ elif page=="Exploración":
     else:
         st.plotly_chart(px.bar(df[column].value_counts().reset_index(),x=column,y="count"),use_container_width=True)
     st.write("Nulos:",int(df.isna().sum().sum())," · Filas:",len(df)," · Duplicados:",int(df.duplicated().sum()))
-elif page=="Entrenar y generar":
-    st.subheader("TVAE — modelo entrenado sobre datos ficticios de clientes")
-    epochs=st.slider("Épocas",10,300,30,step=10)
-    batch=st.selectbox("Batch size",[32,64,128],index=1)
-    qty=st.slider("Clientes sintéticos",50,1000,250,step=50)
-    st.info("La demo entrena TVAE con la tabla Clientes (sin identificador), luego genera las otras tres entidades mediante reglas explícitas. Esta aproximación preserva integridad pero no modela todas las relaciones estadísticas entre entidades.")
-    if st.button("Entrenar y generar",type="primary"):
-        with st.spinner("Entrenando TVAE..."):
-            source=t["clientes"].drop(columns=["cliente_id"])
-            meta=SingleTableMetadata()
-            meta.detect_from_dataframe(data=source)
-            model=TVAESynthesizer(meta,epochs=int(epochs),batch_size=int(batch),enforce_min_max_values=True)
-            start=time.perf_counter()
-            model.fit(source)
-            training=time.perf_counter()-start
-            start=time.perf_counter()
-            generated=model.sample(num_rows=int(qty))
-            generation=time.perf_counter()-start
-            generated["edad"]=pd.to_numeric(generated["edad"],errors="coerce").fillna(40).clip(18,100).astype(int)
-            generated["cliente_id"]=np.arange(1,len(generated)+1)
-            synthetic=build_data(int(qty),int(len(st.session_state.runs)+100))
-            synthetic["clientes"]=generated[["cliente_id","segmento","region","nivel_riesgo","edad"]]
-            score=100*max(0,1-abs(float(source["edad"].mean())-float(generated["edad"].mean()))/max(float(source["edad"].mean()),1))
-            run={"epochs":epochs,"batch":batch,"rows":qty,"train_sec":round(training,2),"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic}
-            st.session_state.runs.append(run)
-            st.success(f"Experimento guardado. Entrenamiento: {training:.2f}s · Generación: {generation:.2f}s · Integridad: {verify(synthetic)}")
-    if st.session_state.runs:
-        last=st.session_state.runs[-1]
-        name=st.selectbox("Tabla sintética",list(last["tables"]))
-        st.dataframe(last["tables"][name].head(25),use_container_width=True)
-        st.download_button("Descargar CSV sintético",last["tables"][name].to_csv(index=False),name+".csv")
+elif page=="Entrenamiento":
+    st.subheader("01 · Entrenamiento de TVAE")
+    st.markdown("El entrenamiento aprende patrones estadísticos del dataset original. **No genera todavía nuevos registros**. Al terminar, el modelo queda disponible para ejecutar diferentes generaciones.")
+    st.info("En esta primera PoC se entrena exclusivamente la tabla Clientes, sin cliente_id. Ventas, Facturas y Pagos siguen siendo construidas mediante reglas de ejemplo. No es todavía un modelo generativo relacional.")
+    experiment_name=st.text_input("Nombre del modelo",f"TVAE {len(st.session_state.models)+1}")
+    c1,c2,c3=st.columns(3)
+    with c1:
+        epochs=st.slider("Épocas",min_value=10,max_value=400,value=100,step=10,help="Número de pasadas completas por todos los registros. Más épocas dan más oportunidades de aprender, pero tardan más y pueden sobreajustar.")
+        st.caption("↑ Mayor aprendizaje potencial y tiempo. ↓ Entrena más rápido; puede perder patrones.")
+        batch=st.selectbox("Batch size",[20,50,100,200,500],index=2,help="Registros usados por cada actualización del modelo. Un batch pequeño introduce más variabilidad y más pasos por época; uno grande suele usar más memoria.")
+        st.caption("↑ Actualizaciones más estables, más memoria. ↓ Más pasos y variabilidad.")
+    with c2:
+        embedding=st.selectbox("Dimensión latente (embedding)",[16,32,64,128,256],index=3,help="Capacidad del espacio interno comprimido donde el modelo representa patrones de los datos.")
+        st.caption("↑ Más capacidad para relaciones complejas, mayor riesgo de ajustar ruido.")
+        layers=st.selectbox("Capas internas encoder/decoder",["64 × 64","128 × 128","256 × 256"],index=1,help="Número de neuronas por capa interna, tanto en el codificador como en el decodificador.")
+        st.caption("↑ Mayor complejidad y costo. ↓ Modelo más simple y rápido.")
+    with c3:
+        l2=st.selectbox("Regularización L2",[0.0,1e-6,1e-5,1e-4,1e-3],index=2,format_func=lambda v:f"{v:g}",help="Penalización que desalienta pesos excesivos; puede reducir sobreajuste, pero si es alta pierde detalles.")
+        st.caption("↑ Penaliza más el sobreajuste. ↓ Modelo más flexible.")
+        loss=st.selectbox("Peso de reconstrucción (loss factor)",[1,2,3,5,10],index=1,help="Prioridad relativa de reconstruir los datos con fidelidad frente a la regularización variacional.")
+        st.caption("↑ Prioriza reconstrucción; conviene validar diversidad y copias.")
+    with st.expander("Opciones avanzadas y reproducibilidad",expanded=False):
+        seed=st.number_input("Semilla del experimento",0,999999,42,help="Punto de partida del azar. Usar la misma semilla ayuda a comparar configuraciones, aunque no garantiza resultados idénticos en todo entorno.")
+        minmax=st.checkbox("Respetar mínimo y máximo numérico observado",value=True,help="Durante el posprocesamiento, limita valores numéricos a los límites observados. Puede recortar extremos.")
+        rounding=st.checkbox("Conservar redondeo numérico",value=True,help="Intenta devolver los valores numéricos con una precisión equivalente a la de origen.")
+        st.caption("La semilla es reproducibilidad, no calidad. El número de filas sintéticas se define en Generación y NO requiere reentrenar.")
+    if st.button("Entrenar y guardar modelo",type="primary"):
+        source=t["clientes"].drop(columns=["cliente_id"])
+        meta=SingleTableMetadata();meta.detect_from_dataframe(data=source)
+        dims=tuple(int(v) for v in layers.split(" × "))
+        with st.spinner("Entrenando TVAE (esta etapa puede tomar tiempo)..."):
+            try:
+                import torch
+                torch.manual_seed(int(seed));np.random.seed(int(seed))
+                model=TVAESynthesizer(meta,epochs=int(epochs),batch_size=int(batch),embedding_dim=int(embedding),compress_dims=dims,decompress_dims=dims,l2scale=float(l2),loss_factor=int(loss),enforce_min_max_values=minmax,enforce_rounding=rounding,enable_gpu=False)
+                start=time.perf_counter();model.fit(source);duration=time.perf_counter()-start
+                st.session_state.models.append({"name":experiment_name,"model":model,"train_sec":round(duration,2),"params":{"épocas":epochs,"batch":batch,"embedding":embedding,"capas":layers,"L2":l2,"loss":loss,"semilla":seed,"minmax":minmax,"rounding":rounding}})
+                st.success(f"Modelo '{experiment_name}' entrenado y guardado en esta sesión. Tiempo: {duration:.2f} s.")
+            except Exception as exc:st.error(f"Error de entrenamiento: {exc}")
+    if st.session_state.models:
+        st.markdown("**Modelos entrenados disponibles**")
+        st.dataframe(pd.DataFrame([{"Modelo":m["name"],"Tiempo (s)":m["train_sec"],**m["params"]} for m in st.session_state.models]),use_container_width=True)
+    st.caption("Los modelos se mantienen en memoria durante esta sesión. Streamlit Community Cloud puede reiniciar la sesión y perderlos; persistencia será una fase posterior.")
+
+elif page=="Generación":
+    st.subheader("02 · Generación de datos sintéticos")
+    st.markdown("Selecciona un modelo **ya entrenado**, define cuántos clientes generar y crea uno o más datasets. Puedes repetir la generación sin entrenar otra vez.")
+    if not st.session_state.models:
+        st.warning("No hay modelos entrenados. Primero entra a la sección Entrenamiento.")
+    else:
+        model_idx=st.selectbox("Modelo entrenado",list(range(len(st.session_state.models))),format_func=lambda i:f"{st.session_state.models[i]['name']} · {st.session_state.models[i]['params']['épocas']} épocas")
+        qty=st.slider("Cantidad de clientes sintéticos",50,2000,250,step=50,help="Número de filas solicitadas al modelo entrenado. Cambiar este número no afecta los pesos del modelo ni exige reentrenamiento.")
+        batch_name=st.text_input("Nombre del dataset generado",f"Generación {len(st.session_state.runs)+1}")
+        if st.button("Generar datos con el modelo seleccionado",type="primary"):
+            with st.spinner("Generando datos nuevos..."):
+                try:
+                    selected=st.session_state.models[model_idx]
+                    start=time.perf_counter()
+                    generated=selected["model"].sample(num_rows=int(qty))
+                    generation=time.perf_counter()-start
+                    generated["edad"]=pd.to_numeric(generated["edad"],errors="coerce").fillna(40).clip(18,100).astype(int)
+                    generated["cliente_id"]=np.arange(1,len(generated)+1)
+                    synthetic=build_data(int(qty),int(len(st.session_state.runs)+100))
+                    synthetic["clientes"]=generated[["cliente_id","segmento","region","nivel_riesgo","edad"]]
+                    score=100*max(0,1-abs(float(t["clientes"].edad.mean())-float(generated.edad.mean()))/max(float(t["clientes"].edad.mean()),1))
+                    run={"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic}
+                    st.session_state.runs.append(run)
+                    st.success(f"Dataset '{batch_name}' generado en {generation:.2f}s, sin reentrenar. Integridad básica: {verify(synthetic)}")
+                except Exception as exc:st.error(f"No se pudo generar: {exc}")
+        if st.session_state.runs:
+            idx=st.selectbox("Dataset generado para inspeccionar",list(range(len(st.session_state.runs))),format_func=lambda i:f"{st.session_state.runs[i]['nombre']} · {st.session_state.runs[i]['modelo']}")
+            selected_run=st.session_state.runs[idx]
+            name=st.selectbox("Tabla sintética",list(selected_run["tables"]))
+            st.dataframe(selected_run["tables"][name].head(30),use_container_width=True)
+            st.download_button("Descargar CSV sintético",selected_run["tables"][name].to_csv(index=False),name+".csv")
+
 elif page=="Comparar experimentos":
     st.subheader("Historial en la sesión")
-    if not st.session_state.runs:st.info("Primero ejecuta al menos un entrenamiento.")
+    if not st.session_state.runs:st.info("Primero ejecuta al menos una generación.")
     else:
         rows=[{k:v for k,v in x.items() if k!="tables"} for x in st.session_state.runs]
         df=pd.DataFrame(rows);st.dataframe(df,use_container_width=True)
@@ -190,7 +236,7 @@ elif page=="7 métricas QE":
     st.subheader("Siete mediciones: datos originales frente a sintéticos")
     st.info("Métricas demostrativas de las dimensiones del Capstone. No equivalen a evaluación de privacidad ni a certificación funcional.")
     if not st.session_state.runs:
-        st.warning("Ejecuta primero un entrenamiento y una generación en la sección 'Entrenar y generar'.")
+        st.warning("Entrena primero un modelo en Entrenamiento y después genera un dataset en Generación.")
     else:
         idx=st.selectbox("Experimento",list(range(len(st.session_state.runs))),format_func=lambda i:f"Experimento {i+1} · {st.session_state.runs[i]['epochs']} épocas")
         name=st.selectbox("Entidad",list(t))
