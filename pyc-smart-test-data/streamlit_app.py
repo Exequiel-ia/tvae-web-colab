@@ -161,6 +161,65 @@ def assess_seven(original,synth):
     met7=100*np.mean([str(original[c].dtype)==str(synth[c].dtype) for c in original.columns]) if len(original.columns) else np.nan
     return dict(zip(METRIC_DESCRIPTIONS,[met1,met2,met3,met4,met5,met6,met7]))
 
+METRIC_SHORT={
+    "MET1":"Fidelidad estadística",
+    "MET2":"Diversidad categórica",
+    "MET3":"Coherencia estructural",
+    "MET4":"No copia directa",
+    "MET5":"Comportamiento de outliers",
+    "MET6":"Cobertura para QA",
+    "MET7":"Compatibilidad técnica"
+}
+
+METRIC_GUIDANCE={
+    "MET1":"Compara las relaciones entre variables numéricas. Un valor alto indica que las correlaciones se parecen más al original.",
+    "MET2":"Mide cuánto se conservan categorías y dominios observados. Un valor alto indica buena cobertura categórica.",
+    "MET3":"Revisa estructura, columnas compartidas y patrón de nulos. Un valor alto indica mayor coherencia estructural.",
+    "MET4":"Mide la ausencia de copias exactas de registros originales. Cerca de 100 es deseable, pero no demuestra anonimato por sí solo.",
+    "MET5":"Compara la proporción de valores extremos. Un valor alto indica que el comportamiento de outliers es más parecido.",
+    "MET6":"Evalúa cobertura de rangos y respeto de límites numéricos. Un valor alto sugiere mejor cobertura potencial para casos QA.",
+    "MET7":"Compara columnas y tipos físicos. Un valor alto indica mayor compatibilidad técnica para integrar o probar procesos."
+}
+
+def score_band(value):
+    if value is None or pd.isna(value):
+        return "No aplica","No hay suficientes variables comparables para calcularla en esta entidad."
+    value=float(value)
+    if value>=90:
+        return "Muy alto","La similitud es fuerte para esta dimensión."
+    if value>=75:
+        return "Bueno","El resultado es sólido, aunque todavía puede haber diferencias relevantes."
+    if value>=60:
+        return "Intermedio","Hay similitud parcial; conviene revisar esta dimensión antes de concluir."
+    return "A revisar","La diferencia con el original es importante en esta dimensión."
+
+def metric_delta(current,previous):
+    if current is None or previous is None or pd.isna(current) or pd.isna(previous):
+        return None
+    return round(float(current)-float(previous),2)
+
+def exeia_metric_summary(scores,previous_scores=None):
+    valid={k:float(v) for k,v in scores.items() if pd.notna(v)}
+    if not valid:
+        return "No hay métricas calculables para esta entidad."
+    best=max(valid,key=valid.get)
+    weakest=min(valid,key=valid.get)
+    parts=[
+        f"La fortaleza principal de esta corrida es **{METRIC_SHORT[best]} ({valid[best]:.1f})**.",
+        f"La dimensión que más conviene revisar es **{METRIC_SHORT[weakest]} ({valid[weakest]:.1f})**."
+    ]
+    if previous_scores:
+        deltas={k:metric_delta(scores.get(k),previous_scores.get(k)) for k in scores}
+        comparable={k:v for k,v in deltas.items() if v is not None}
+        if comparable:
+            up=max(comparable,key=comparable.get)
+            down=min(comparable,key=comparable.get)
+            if comparable[up]>0:
+                parts.append(f"Respecto del experimento anterior, la mayor mejora es **{METRIC_SHORT[up]} (+{comparable[up]:.1f})**.")
+            if comparable[down]<0:
+                parts.append(f"La mayor caída es **{METRIC_SHORT[down]} ({comparable[down]:.1f})**.")
+    return " ".join(parts)
+
 CONFIDENTIAL_FIELDS={"nombre_cliente","direccion","email","telefono"}
 DOMAINS={"segmento":"Personas,Pyme,Empresa","region":"Lima,Arequipa,Cusco,Trujillo","nivel_riesgo":"Bajo,Medio,Alto","canal":"Web,Sucursal,App","estado":"Pendiente,Pagada,Parcial"}
 
@@ -399,8 +458,9 @@ elif page=="Diccionario y privacidad":
         else:
             st.session_state.dictionary=candidate
             st.session_state.models=[]
-            st.session_state.runs=[]
             st.success(f"Configuración de {entity} guardada.")
+            if st.session_state.runs:
+                st.caption("Los experimentos ya generados se conservan como historial. Para nuevas generaciones debes volver a entrenar.")
     count=int(st.session_state.dictionary.groupby("Entidad")["Aprobado"].all().sum())
     st.caption(f"Tablas completamente clasificadas: {count} de {len(t)}. Guardar una tabla válida la marca automáticamente como revisada.")
     st.warning("La PoC todavía solo entrena los campos no sensibles de Clientes. Los otros campos y entidades no están aún integrados en el aprendizaje relacional del modelo. La protección de datos reales requiere controles adicionales.")
@@ -605,37 +665,147 @@ elif page=="Comparar experimentos":
         st.caption("Esta comparación es ilustrativa, no reproduce las siete métricas completas del Capstone ni certifica privacidad.")
 
 elif page=="7 métricas QE":
-    st.subheader("Siete mediciones: datos originales frente a sintéticos")
-    st.info("Métricas demostrativas de las dimensiones del Capstone. No equivalen a evaluación de privacidad ni a certificación funcional.")
+    st.subheader("Panel comparativo de calidad sintética")
+    st.caption("Lectura ejecutiva de las siete dimensiones: datos originales frente a datos sintéticos.")
     if not st.session_state.runs:
         st.warning("Entrena primero un modelo en Entrenamiento y después genera un dataset en Generación.")
     else:
-        idx=st.selectbox("Experimento",list(range(len(st.session_state.runs))),format_func=lambda i:f"Experimento {i+1} · {st.session_state.runs[i]['epochs']} épocas")
-        name=st.selectbox("Entidad",list(t))
-        real=t[name];synt=st.session_state.runs[idx]["tables"][name]
+        idx=st.selectbox(
+            "Experimento",
+            list(range(len(st.session_state.runs))),
+            format_func=lambda i:f"Experimento {i+1} · {st.session_state.runs[i]['nombre']} · {st.session_state.runs[i]['epochs']} épocas"
+        )
+        name=st.selectbox("Entidad analizada",list(t),format_func=lambda x:x.capitalize())
+        real=t[name]
+        synt=st.session_state.runs[idx]["tables"][name]
         scores=assess_seven(real,synt)
-        if name=="clientes":
-            confidentiality=pd.DataFrame([{"Columna":c,"Coincidencias originales-sintéticas":len(set(real[c].astype(str))&set(synt[c].astype(str)))} for c in CONFIDENTIAL_FIELDS if c in real.columns and c in synt.columns])
-            st.markdown("**Control de confidencialidad por columna**")
-            st.dataframe(confidentiality,use_container_width=True,hide_index=True)
-            st.caption("Un cruce exacto igual a cero es un control inicial; no constituye prueba de anonimato ni de protección frente a inferencia.")
-        st.markdown("**Parámetros del modelo que produjo este dataset:**")
-        st.json({k:v for k,v in st.session_state.runs[idx].get("params",{}).items() if k!="diccionario"})
-        metric_rows=[{"Métrica":k,"Puntuación (0–100)":round(v,2) if pd.notna(v) else None,"Qué evalúa":METRIC_DESCRIPTIONS[k]} for k,v in scores.items()]
-        df=pd.DataFrame(metric_rows)
-        st.dataframe(df,use_container_width=True,hide_index=True)
-        plot=df.dropna(subset=["Puntuación (0–100)"])
-        st.plotly_chart(px.bar(plot,x="Métrica",y="Puntuación (0–100)",title="Indicadores originales vs sintéticos",range_y=[0,100]),use_container_width=True)
-        a,b=st.columns(2)
-        with a:
-            st.markdown("**Datos originales**")
-            st.dataframe(real.head(40),use_container_width=True)
-        with b:
-            st.markdown("**Datos sintéticos**")
-            st.dataframe(synt.head(40),use_container_width=True)
-        common=[c for c in real.select_dtypes(include="number").columns if c in synt.columns and pd.api.types.is_numeric_dtype(synt[c])]
-        if common:
-            field=st.selectbox("Variable numérica a comparar",common)
-            combined=pd.concat([real[[field]].assign(Dataset="Original"),synt[[field]].assign(Dataset="Sintético")],ignore_index=True)
-            st.plotly_chart(px.histogram(combined,x=field,color="Dataset",barmode="overlay",marginal="box",title="Distribución comparada"),use_container_width=True)
-        st.caption("Los identificadores de entidades reconstruidas no se comparan como registros equivalentes. MET1, MET5 y MET6 requieren variables numéricas de negocio y pueden no aplicar a todas las entidades.")
+
+        previous_scores=None
+        if idx>0 and name in st.session_state.runs[idx-1]["tables"]:
+            previous_scores=assess_seven(real,st.session_state.runs[idx-1]["tables"][name])
+
+        valid_values=[float(v) for v in scores.values() if pd.notna(v)]
+        avg_score=np.mean(valid_values) if valid_values else np.nan
+        non_applicable=sum(pd.isna(v) for v in scores.values())
+
+        k1,k2,k3,k4=st.columns(4)
+        k1.metric("Experimento",f"{idx+1}")
+        k2.metric("Entidad",name.capitalize())
+        k3.metric("Promedio métricas",f"{avg_score:.1f}" if pd.notna(avg_score) else "N/A")
+        k4.metric("Métricas aplicables",f"{7-non_applicable}/7")
+
+        st.markdown("### 🤖 Exe-IA · Lectura de esta corrida")
+        st.info(exeia_metric_summary(scores,previous_scores))
+
+        if previous_scores is not None:
+            deltas=[metric_delta(scores[k],previous_scores.get(k)) for k in scores]
+            valid_deltas=[d for d in deltas if d is not None]
+            if valid_deltas:
+                st.caption("La comparación se hace contra el experimento inmediatamente anterior para la misma entidad.")
+
+        tab1,tab2,tab3,tab4=st.tabs(["Resumen","Métricas explicadas","Original vs sintético","Confidencialidad"])
+
+        with tab1:
+            metric_rows=[]
+            for key,value in scores.items():
+                level,message=score_band(value)
+                delta=metric_delta(value,previous_scores.get(key)) if previous_scores else None
+                metric_rows.append({
+                    "Métrica":key,
+                    "Dimensión":METRIC_SHORT[key],
+                    "Puntuación":round(value,2) if pd.notna(value) else None,
+                    "Nivel":level,
+                    "Δ vs anterior":delta
+                })
+            summary_df=pd.DataFrame(metric_rows)
+            st.dataframe(summary_df,use_container_width=True,hide_index=True)
+
+            plot=summary_df.dropna(subset=["Puntuación"]).copy()
+            fig=px.bar(
+                plot,
+                x="Métrica",
+                y="Puntuación",
+                text="Puntuación",
+                color="Puntuación",
+                color_continuous_scale=["#dbe6ff","#6f8fe8","#172658"],
+                range_y=[0,100],
+                title="Perfil de calidad de la corrida"
+            )
+            fig.update_traces(texttemplate="%{text:.1f}",textposition="outside")
+            fig.update_layout(
+                template="plotly_white",
+                coloraxis_showscale=False,
+                margin=dict(l=20,r=20,t=60,b=20),
+                font=dict(color="#26324a"),
+                plot_bgcolor="white",
+                paper_bgcolor="white"
+            )
+            fig.update_yaxes(gridcolor="#edf0f6",title="Puntuación")
+            fig.update_xaxes(title="")
+            st.plotly_chart(fig,use_container_width=True)
+
+            st.markdown("**Parámetros del modelo que produjo este dataset**")
+            st.json({k:v for k,v in st.session_state.runs[idx].get("params",{}).items() if k!="diccionario"})
+
+        with tab2:
+            st.markdown("### Exe-IA te explica cada métrica")
+            for key,value in scores.items():
+                level,message=score_band(value)
+                delta=metric_delta(value,previous_scores.get(key)) if previous_scores else None
+                score_txt="No aplica" if pd.isna(value) else f"{float(value):.1f}/100"
+                delta_txt=""
+                if delta is not None:
+                    if delta>0: delta_txt=f" · ↑ {delta:.1f} vs anterior"
+                    elif delta<0: delta_txt=f" · ↓ {abs(delta):.1f} vs anterior"
+                    else: delta_txt=" · Sin cambio vs anterior"
+                with st.expander(f"{key} · {METRIC_SHORT[key]} · {score_txt}{delta_txt}",expanded=(key=="MET1")):
+                    st.write(METRIC_GUIDANCE[key])
+                    st.markdown(f"**Lectura de Exe-IA:** {message}")
+                    st.caption(METRIC_DESCRIPTIONS[key])
+
+        with tab3:
+            a,b=st.columns(2)
+            with a:
+                st.markdown("**Datos originales**")
+                st.dataframe(real.head(40),use_container_width=True)
+            with b:
+                st.markdown("**Datos sintéticos**")
+                st.dataframe(synt.head(40),use_container_width=True)
+
+            common=[c for c in real.select_dtypes(include="number").columns if c in synt.columns and pd.api.types.is_numeric_dtype(synt[c])]
+            if common:
+                field=st.selectbox("Variable numérica a comparar",common,key="metric_compare_field")
+                combined=pd.concat([
+                    real[[field]].assign(Dataset="Original"),
+                    synt[[field]].assign(Dataset="Sintético")
+                ],ignore_index=True)
+                fig=px.histogram(
+                    combined,
+                    x=field,
+                    color="Dataset",
+                    barmode="overlay",
+                    marginal="box",
+                    opacity=.68,
+                    color_discrete_map={"Original":"#172658","Sintético":"#56b4a9"},
+                    title=f"Distribución comparada · {field}"
+                )
+                fig.update_layout(template="plotly_white",margin=dict(l=20,r=20,t=60,b=20))
+                st.plotly_chart(fig,use_container_width=True)
+
+        with tab4:
+            if name=="clientes":
+                confidentiality=pd.DataFrame([
+                    {"Columna":c,"Coincidencias originales-sintéticas":len(set(real[c].astype(str))&set(synt[c].astype(str)))}
+                    for c in CONFIDENTIAL_FIELDS if c in real.columns and c in synt.columns
+                ])
+                total_matches=int(confidentiality["Coincidencias originales-sintéticas"].sum()) if not confidentiality.empty else 0
+                if total_matches==0:
+                    st.success("Exe-IA: no se detectaron coincidencias exactas en los campos confidenciales controlados.")
+                else:
+                    st.warning(f"Exe-IA: se detectaron {total_matches} coincidencias exactas. Conviene revisar la generación de campos confidenciales.")
+                st.dataframe(confidentiality,use_container_width=True,hide_index=True)
+                st.caption("Cero coincidencias exactas es un control inicial; no constituye prueba de anonimato ni de protección frente a inferencia.")
+            else:
+                st.info("El control explícito de coincidencias confidenciales está implementado actualmente para la entidad Clientes.")
+
+        st.caption("MET1, MET5 y MET6 pueden no aplicar cuando la entidad no tiene suficientes variables numéricas de negocio comparables. Estas métricas son demostrativas y no certifican privacidad ni utilidad funcional.")
