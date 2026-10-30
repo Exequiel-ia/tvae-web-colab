@@ -25,6 +25,32 @@ st.markdown("""<style>
 .hero p{color:#dbe6ff;margin:8px 0 0}
 .wordmark{background:white;color:#344b9f;display:inline-block;padding:8px 22px;border-radius:12px;font:italic 700 32px Georgia;margin-bottom:12px}
 .section{padding:10px 0;font-weight:700;color:#172658;font-size:1.2rem}
+.exeia-card{
+    background:linear-gradient(135deg,#f7f9ff,#eef3ff);
+    border:1px solid #d9e2ff;
+    border-radius:18px;
+    padding:18px 20px;
+    margin:14px 0 20px 0;
+    box-shadow:0 6px 18px rgba(23,38,88,.08)
+}
+.exeia-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.exeia-badge{
+    width:38px;height:38px;border-radius:12px;
+    background:linear-gradient(135deg,#172658,#4767d8);
+    color:#fff;display:flex;align-items:center;justify-content:center;
+    font-weight:800;font-size:18px
+}
+.exeia-title{font-size:1.05rem;font-weight:800;color:#172658}
+.exeia-sub{font-size:.9rem;color:#6b7280;margin-top:1px}
+.exeia-body{color:#344054;line-height:1.55;font-size:.97rem}
+.exeia-tip{margin-top:10px;padding-top:10px;border-top:1px solid #dfe6fb;color:#52606d;font-size:.92rem}
+[data-testid="stMetric"]{
+    background:#fff;border:1px solid #e5e7eb;border-radius:16px;
+    padding:14px 16px;box-shadow:0 4px 14px rgba(0,0,0,.04)
+}
+[data-testid="stDataFrame"]{
+    border:1px solid #e5e7eb;border-radius:14px;overflow:hidden
+}
 </style>""",unsafe_allow_html=True)
 st.markdown('<div class="hero"><div class="wordmark">PyC</div><h1>Smart Test Data Lab</h1><p>Calidad de datos · Inteligencia sintética · Comparación de escenarios</p></div>',unsafe_allow_html=True)
 st.caption("PoC · Datos 100% ficticios · TVAE sobre clientes; entidades dependientes generadas mediante reglas")
@@ -222,11 +248,94 @@ def validate_counts(client_count,sales_count,invoice_count,payment_count):
     if payment_count<0:errors.append("Los pagos no pueden ser negativos.")
     return errors
 
+
+EXEIA_HELP={
+    "Base de datos":{
+        "titulo":"Base de datos",
+        "explicacion":"Aquí trabajas con la base relacional de demostración: Clientes → Ventas → Facturas → Pagos. Puedes regenerar los datos ficticios y revisar la integridad referencial antes de avanzar.",
+        "tip":"Antes de seguir, verifica que la integridad referencial aparezca como correcta."
+    },
+    "Diccionario y privacidad":{
+        "titulo":"Diccionario y privacidad",
+        "explicacion":"En esta sección clasificas cada columna: su rol, si es confidencial y qué tratamiento tendrá. Al guardar una tabla válida, queda marcada automáticamente como revisada.",
+        "tip":"Completa y guarda las cuatro tablas. El objetivo es llegar a 4 de 4 antes de entrenar."
+    },
+    "Exploración":{
+        "titulo":"Exploración",
+        "explicacion":"Aquí defines qué características del dataset quieres preservar y observas evidencia del original: distribuciones, categorías, valores extremos, nulos y relaciones relevantes.",
+        "tip":"No busques solo 'datos parecidos': identifica qué comportamiento del negocio necesitas conservar."
+    },
+    "Entrenamiento":{
+        "titulo":"Entrenamiento",
+        "explicacion":"Aquí entrenas TVAE con los campos habilitados por la política actual. Las épocas indican cuántas veces el modelo recorre el conjunto de entrenamiento; más épocas no garantizan automáticamente mejor calidad.",
+        "tip":"Usa la semilla para reproducibilidad. Cambia épocas o batch cuando quieras comparar experimentos."
+    },
+    "Generación":{
+        "titulo":"Generación",
+        "explicacion":"En esta etapa el modelo ya entrenado crea nuevos datos sintéticos. Generar un dataset no implica reentrenar el modelo, por lo que puedes producir varias corridas desde un mismo entrenamiento.",
+        "tip":"Cada generación se guarda como un nuevo experimento y luego puede compararse en las métricas."
+    },
+    "Comparar experimentos":{
+        "titulo":"Comparar experimentos",
+        "explicacion":"Aquí comparas las corridas generadas durante la sesión y revisas cómo cambian sus resultados según parámetros, tamaño del dataset o entrenamiento utilizado.",
+        "tip":"Compara siempre experimentos que tengan una diferencia concreta de parámetros para que la conclusión sea útil."
+    },
+    "7 métricas QE":{
+        "titulo":"7 métricas QE",
+        "explicacion":"Esta pantalla resume siete dimensiones de comparación entre datos originales y sintéticos. Sirven como indicadores demostrativos de calidad, estructura y similitud; no constituyen por sí solos una certificación de privacidad.",
+        "tip":"Un valor alto no siempre significa 'mejor' en términos absolutos: interpreta cada métrica según el objetivo del experimento."
+    }
+}
+
+def render_exeia(page):
+    info=EXEIA_HELP.get(page)
+    if not info:
+        return
+    with st.expander("🤖 Exe-IA · Asistente contextual", expanded=False):
+        st.markdown(
+            f"""
+            <div class="exeia-card">
+                <div class="exeia-head">
+                    <div class="exeia-badge">AI</div>
+                    <div>
+                        <div class="exeia-title">Exe-IA · {info['titulo']}</div>
+                        <div class="exeia-sub">Asistente de PyC Smart Test Data Lab</div>
+                    </div>
+                </div>
+                <div class="exeia-body">{info['explicacion']}</div>
+                <div class="exeia-tip"><b>Qué revisar:</b> {info['tip']}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        quick=st.radio(
+            "¿Qué quieres que te explique?",
+            ["¿Qué hago en esta pantalla?","¿Qué debo revisar antes de seguir?","¿Qué concepto es importante aquí?"],
+            horizontal=True,
+            key=f"exeia_q_{page}"
+        )
+        if quick=="¿Qué hago en esta pantalla?":
+            st.info(info["explicacion"])
+        elif quick=="¿Qué debo revisar antes de seguir?":
+            st.success(info["tip"])
+        else:
+            concept={
+                "Base de datos":"La integridad referencial asegura que las relaciones entre entidades sean coherentes.",
+                "Diccionario y privacidad":"La clasificación de columnas define qué se aprende, qué se reconstruye y qué debe protegerse.",
+                "Exploración":"Preservar utilidad significa mantener patrones relevantes, no copiar registros originales.",
+                "Entrenamiento":"Entrenar ajusta el modelo a los patrones del dataset; generar crea nuevas observaciones a partir de ese aprendizaje.",
+                "Generación":"Una misma versión entrenada puede producir múltiples datasets sintéticos distintos.",
+                "Comparar experimentos":"Un experimento solo es comparable si conoces qué parámetro o condición cambió entre corridas.",
+                "7 métricas QE":"Las métricas deben interpretarse como un conjunto; ninguna aislada representa por sí sola la calidad total."
+            }[page]
+            st.warning(concept)
+
 if "tables" not in st.session_state:st.session_state.tables=build_data()
 if "runs" not in st.session_state:st.session_state.runs=[]
 if "models" not in st.session_state:st.session_state.models=[]
 if "dictionary" not in st.session_state:st.session_state.dictionary=default_dictionary(st.session_state.tables)
 page=st.sidebar.radio("Secciones",["Base de datos","Diccionario y privacidad","Exploración","Entrenamiento","Generación","Comparar experimentos","7 métricas QE"])
+render_exeia(page)
 t=st.session_state.tables
 if page=="Base de datos":
     st.subheader("Modelo: Clientes → Ventas → Facturas → Pagos")
