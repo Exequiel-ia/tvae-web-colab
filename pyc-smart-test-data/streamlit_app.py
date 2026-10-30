@@ -1,5 +1,7 @@
 """PyC Smart Test Data Lab — demonstration with synthetic-only data."""
 import io
+import json
+import zipfile
 import sqlite3
 import time
 import numpy as np
@@ -370,6 +372,13 @@ elif page=="Generación":
             name=st.selectbox("Tabla sintética",list(selected_run["tables"]))
             st.dataframe(selected_run["tables"][name].head(30),use_container_width=True)
             st.download_button("Descargar CSV sintético",selected_run["tables"][name].to_csv(index=False),name+".csv")
+            archive=io.BytesIO()
+            with zipfile.ZipFile(archive,"w",compression=zipfile.ZIP_DEFLATED) as z:
+                for entity,frame in selected_run["tables"].items():
+                    z.writestr(f"data/{entity}.csv",frame.to_csv(index=False))
+                metadata={key:value for key,value in selected_run.items() if key not in ("tables",)}
+                z.writestr("experiment.json",json.dumps(metadata,ensure_ascii=False,indent=2,default=str))
+            st.download_button("Exportar experimento completo (ZIP)",archive.getvalue(),file_name=f"experimento_{idx+1}.zip",mime="application/zip",help="Permite conservar los CSV y parámetros fuera de Streamlit. No incluye los pesos entrenados del modelo.")
 
 elif page=="Comparar experimentos":
     st.subheader("Historial en la sesión")
