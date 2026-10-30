@@ -8,6 +8,7 @@ import plotly.express as px
 import streamlit as st
 from sdv.metadata import SingleTableMetadata
 from sdv.single_table import TVAESynthesizer
+from relational import generate_children, verify_relations
 
 st.set_page_config(page_title="PyC Smart Test Data Lab", page_icon="🧪", layout="wide")
 st.markdown("""<style>
@@ -320,7 +321,7 @@ elif page=="Entrenamiento":
     if st.session_state.models:
         st.markdown("**Modelos entrenados disponibles**")
         st.dataframe(pd.DataFrame([{"Modelo":m["name"],"Tiempo (s)":m["train_sec"],**m["params"]} for m in st.session_state.models]),use_container_width=True)
-    st.caption("Los modelos se mantienen en memoria durante esta sesión. Streamlit Community Cloud puede reiniciar la sesión y perderlos; persistencia será una fase posterior.")
+    st.caption("Persistencia: los modelos están en memoria de sesión, no en almacenamiento externo. Para almacenamiento permanente hace falta configurar un servicio externo privado; esta versión no afirma conservarlos tras reinicios.")
 
 elif page=="Generación":
     st.subheader("02 · Generación de datos sintéticos")
@@ -330,9 +331,9 @@ elif page=="Generación":
     else:
         model_idx=st.selectbox("Modelo entrenado",list(range(len(st.session_state.models))),format_func=lambda i:f"{st.session_state.models[i]['name']} · {st.session_state.models[i]['params']['épocas']} épocas")
         qty=st.slider("Cantidad de clientes sintéticos",50,2000,250,step=50,help="Número de clientes. La cantidad de entidades dependientes debe respetar relaciones y reglas.")
-        st.markdown("**Cantidades relacionadas:** cada cliente tendrá entre 1 y 3 ventas; cada venta genera una factura, y cada factura puede tener 0 o 1 pago en esta versión. No se configuran cantidades imposibles ni se inventan registros huérfanos.")
+        st.markdown("**Relaciones basadas en datos:** la cantidad de ventas por cliente, proporción de ventas facturadas y patrones de pagos se estiman desde las tablas originales. Las claves y reglas de montos se reconstruyen y validan.")
         estimated_min,estimated_max=qty,qty*3
-        st.caption(f"Ventas y facturas esperadas: entre {estimated_min} y {estimated_max}. Pagos: entre 0 y el total de facturas.")
+        st.caption("Los volúmenes dependientes no son independientes: se determinan a partir de los patrones observados. Esta etapa utiliza muestreo empírico, no TVAE multitabla.")
         batch_name=st.text_input("Nombre del dataset generado",f"Generación {len(st.session_state.runs)+1}")
         if st.button("Generar datos con el modelo seleccionado",type="primary"):
             with st.spinner("Generando datos nuevos..."):
@@ -347,20 +348,21 @@ elif page=="Generación":
                     generated["direccion"]=[f"Avenida Inventada {i+1}, Distrito Prueba" for i in range(len(generated))]
                     generated["email"]=[f"sintetico{i+1:05d}@example.invalid" for i in range(len(generated))]
                     generated["telefono"]=[f"999-{i+1:07d}" for i in range(len(generated))]
-                    synthetic=build_data(int(qty),int(len(st.session_state.runs)+100))
-                    synthetic["clientes"]=generated[t["clientes"].columns.tolist()]
+                    synthetic=generate_children(t,generated[t["clientes"].columns.tolist()],seed=int(len(st.session_state.runs)+100))
+                    relation_errors=verify_relations(synthetic)
+                    if relation_errors:raise ValueError("Relaciones: "+"; ".join(relation_errors))
                     domain_errors=check_synthetic_domains(synthetic,st.session_state.dictionary)
                     if domain_errors:raise ValueError("Validación de dominios: "+"; ".join(domain_errors))
                     conf_check={c:len(set(t["clientes"][c].astype(str)) & set(synthetic["clientes"][c].astype(str))) for c in CONFIDENTIAL_FIELDS if c in t["clientes"]}
                     if any(conf_check.values()):raise ValueError(f"Coincidencias confidenciales detectadas: {conf_check}")
                     if not verify(synthetic):raise ValueError("Error de integridad referencial entre las cuatro entidades")
                     score=100*max(0,1-abs(float(t["clientes"].edad.mean())-float(generated.edad.mean()))/max(float(t["clientes"].edad.mean()),1))
-                    run={"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic,"params":selected["params"].copy(),"dataset_role":"clientes TVAE; resto reglas relacionales"}
+                    run={"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic,"params":selected["params"].copy(),"dataset_role":"clientes TVAE; entidades relacionadas por patrones empíricos observados y reglas contables"}
                     st.session_state.runs.append(run)
                     st.success(f"Dataset '{batch_name}' generado en {generation:.2f}s, sin reentrenar. Integridad básica: {verify(synthetic)}")
                     st.write("Entidades resultantes:",{k:len(v) for k,v in synthetic.items()})
                     st.write("Coincidencias exactas en columnas confidenciales:",conf_check)
-                    st.success("Validaciones superadas: dominios categóricos, referencias entre tablas y coincidencias exactas en campos confidenciales de ejemplo.")
+                    st.success("Validaciones superadas: dominios categóricos, relaciones padre-hijo, coherencia factura/pagos y campos confidenciales ficticios.")
                 except Exception as exc:st.error(f"No se pudo generar: {exc}")
         if st.session_state.runs:
             idx=st.selectbox("Dataset generado para inspeccionar",list(range(len(st.session_state.runs))),format_func=lambda i:f"{st.session_state.runs[i]['nombre']} · {st.session_state.runs[i]['modelo']}")
