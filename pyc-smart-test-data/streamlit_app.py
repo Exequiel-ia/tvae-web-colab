@@ -1,5 +1,7 @@
 """PyC Smart Test Data Lab — demonstration with synthetic-only data."""
 import io
+import urllib.request
+from zoneinfo import ZoneInfo
 from datetime import datetime
 import json
 import zipfile
@@ -26,7 +28,24 @@ st.markdown("""<style>
 </style>""",unsafe_allow_html=True)
 st.markdown('<div class="hero"><div class="wordmark">PyC</div><h1>Smart Test Data Lab</h1><p>Calidad de datos · Inteligencia sintética · Comparación de escenarios</p></div>',unsafe_allow_html=True)
 st.caption("PoC · Datos 100% ficticios · TVAE sobre clientes; entidades dependientes generadas mediante reglas")
-st.caption("**Última actualización del código: 30/10/2026 · 18:28 (Chile, UTC−3)** · Rama main")
+@st.cache_data(ttl=300,show_spinner=False)
+def published_version():
+    """Retrieve current public GitHub main head metadata; may differ from deployed Streamlit revision."""
+    try:
+        url="https://api.github.com/repos/Exequiel-ia/tvae-web-colab/commits/main"
+        req=urllib.request.Request(url,headers={"Accept":"application/vnd.github+json","User-Agent":"PyC-Smart-Test-Data-Lab"})
+        with urllib.request.urlopen(req,timeout=5) as response:
+            payload=json.load(response)
+        date_raw=payload["commit"]["committer"]["date"]
+        date=datetime.fromisoformat(date_raw.replace("Z","+00:00")).astimezone(ZoneInfo("America/Santiago"))
+        return payload["sha"][:8],date.strftime("%d/%m/%Y · %H:%M"),None
+    except Exception as exc:
+        return None,None,str(exc)
+head_sha,head_date,head_error=published_version()
+if head_sha:
+    st.caption(f"**GitHub main:** {head_sha} · Último commit: {head_date} (Chile) · Consulta actualizada cada 5 min")
+else:
+    st.caption("**GitHub main:** versión no disponible temporalmente · Revisa el historial de commits")
 
 def build_data(n=250, seed=42):
     rng=np.random.default_rng(seed)
