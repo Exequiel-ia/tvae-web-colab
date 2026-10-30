@@ -455,7 +455,25 @@ if "tables" not in st.session_state:st.session_state.tables=build_data()
 if "runs" not in st.session_state:st.session_state.runs=[]
 if "models" not in st.session_state:st.session_state.models=[]
 if "dictionary" not in st.session_state:st.session_state.dictionary=default_dictionary(st.session_state.tables)
-page=st.sidebar.radio("Secciones",["Base de datos","Diccionario y privacidad","Exploración","Entrenamiento","Generación","Comparar experimentos","7 métricas QE"])
+PAGE_LABELS={
+    "Base de datos":"🗄️  Base de datos",
+    "Diccionario y privacidad":"🔐  Diccionario y privacidad",
+    "Exploración":"🔎  Exploración",
+    "Entrenamiento":"🧠  Entrenamiento",
+    "Generación":"✨  Generación",
+    "Comparar experimentos":"📊  Comparar experimentos",
+    "7 métricas QE":"📈  7 métricas QE"
+}
+st.sidebar.markdown("### Navegación")
+page=st.sidebar.radio(
+    "Secciones",
+    list(PAGE_LABELS),
+    format_func=lambda x:PAGE_LABELS[x],
+    label_visibility="collapsed"
+)
+st.sidebar.markdown("---")
+st.sidebar.caption("PyC Smart Test Data Lab")
+st.sidebar.caption("PoC · datos ficticios · TVAE")
 render_exeia(page)
 t=st.session_state.tables
 if page=="Base de datos":
@@ -659,7 +677,7 @@ elif page=="Entrenamiento":
     st.caption("Persistencia: los modelos están en memoria de sesión, no en almacenamiento externo. Para almacenamiento permanente hace falta configurar un servicio externo privado; esta versión no afirma conservarlos tras reinicios.")
 
 elif page=="Generación":
-    st.subheader("02 · Generación de datos sintéticos")
+    section_header("Generación de datos sintéticos","Crea nuevas corridas desde un modelo ya entrenado, sin volver a entrenar")
     st.markdown("Selecciona un modelo **ya entrenado**, define cuántos clientes generar y crea uno o más datasets. Puedes repetir la generación sin entrenar otra vez.")
     if not st.session_state.models:
         st.warning("No hay modelos entrenados. Primero entra a la sección Entrenamiento.")
