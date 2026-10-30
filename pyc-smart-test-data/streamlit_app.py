@@ -143,6 +143,50 @@ def validate_dictionary(tables,d):
             if not actual_values.issubset(allowed):errors.append(f"{entity}.{col}: hay valores fuera del dominio permitido")
     return errors
 
+def training_policy(tables,dictionary):
+    """Create an enforceable training projection for the present customer-only PoC."""
+    errors=[]
+    customer=dictionary[dictionary["Entidad"]=="clientes"].set_index("Columna")
+    required=["segmento","region","nivel_riesgo","edad"]
+    generated_identifiers=["nombre_cliente","direccion","email","telefono"]
+    for col in required:
+        if col not in customer.index:
+            errors.append(f"Falta definir clientes.{col}")
+            continue
+        row=customer.loc[col]
+        if row["Confidencial"]=="Sí":
+            errors.append(f"clientes.{col} está marcada confidencial: el motor no puede entrenarla en esta PoC pública")
+        if row["Tratamiento"]!="Sintetizar":
+            errors.append(f"clientes.{col} necesita tratamiento Sintetizar para el motor actual")
+        expected_role="Numérica" if col=="edad" else "Categórica"
+        if row["Rol"]!=expected_role:
+            errors.append(f"clientes.{col} debe clasificarse {expected_role}")
+    for col in generated_identifiers:
+        if col in customer.index:
+            row=customer.loc[col]
+            if row["Tratamiento"] not in ("Generar ficticio","Excluir"):
+                errors.append(f"clientes.{col}: solo se admite Generar ficticio o Excluir")
+            if row["Confidencial"]=="Sí" and row["Tratamiento"]!="Generar ficticio":
+                errors.append(f"clientes.{col}: el esquema actual requiere un valor ficticio")
+    if "cliente_id" in customer.index and customer.loc["cliente_id","Tratamiento"]!="Excluir":
+        errors.append("clientes.cliente_id debe reconstruirse, no aprenderse")
+    # Only the 4 business features are trained, regardless of other metadata fields.
+    return errors, required
+
+def check_synthetic_domains(synthetic,dictionary):
+    errors=[]
+    for _,row in dictionary.iterrows():
+        if row["Rol"]!="Categórica" or not str(row["Dominio permitido"]).strip():
+            continue
+        ent,col=row["Entidad"],row["Columna"]
+        if ent not in synthetic or col not in synthetic[ent].columns:
+            continue
+        allowed={x.strip() for x in str(row["Dominio permitido"]).split(",") if x.strip()}
+        seen=set(synthetic[ent][col].dropna().astype(str))
+        unknown=seen-allowed
+        if unknown:errors.append(f"{ent}.{col}: valores generados fuera del dominio: {', '.join(sorted(unknown)[:4])}")
+    return errors
+
 def validate_counts(client_count,sales_count,invoice_count,payment_count):
     errors=[]
     if sales_count<client_count:errors.append("Para el generador actual cada cliente tiene al menos una venta.")
@@ -257,7 +301,11 @@ elif page=="Entrenamiento":
         if not dictionary_ready() or validate_dictionary(t,st.session_state.dictionary):
             st.error("Revisa y aprueba el diccionario de columnas en Diccionario y privacidad antes de entrenar.")
             st.stop()
-        source=t["clientes"].drop(columns=["cliente_id"]+[c for c in CONFIDENTIAL_FIELDS if c in t["clientes"]])
+        policy_errors, train_columns=training_policy(t,st.session_state.dictionary)
+        if policy_errors:
+            st.error("La clasificación seleccionada no es compatible con este motor: "+"; ".join(policy_errors))
+            st.stop()
+        source=t["clientes"][train_columns].copy()
         meta=SingleTableMetadata();meta.detect_from_dataframe(data=source)
         dims=tuple(int(v) for v in layers.split(" × "))
         with st.spinner("Entrenando TVAE (esta etapa puede tomar tiempo)..."):
@@ -301,14 +349,18 @@ elif page=="Generación":
                     generated["telefono"]=[f"999-{i+1:07d}" for i in range(len(generated))]
                     synthetic=build_data(int(qty),int(len(st.session_state.runs)+100))
                     synthetic["clientes"]=generated[t["clientes"].columns.tolist()]
+                    domain_errors=check_synthetic_domains(synthetic,st.session_state.dictionary)
+                    if domain_errors:raise ValueError("Validación de dominios: "+"; ".join(domain_errors))
                     conf_check={c:len(set(t["clientes"][c].astype(str)) & set(synthetic["clientes"][c].astype(str))) for c in CONFIDENTIAL_FIELDS if c in t["clientes"]}
                     if any(conf_check.values()):raise ValueError(f"Coincidencias confidenciales detectadas: {conf_check}")
+                    if not verify(synthetic):raise ValueError("Error de integridad referencial entre las cuatro entidades")
                     score=100*max(0,1-abs(float(t["clientes"].edad.mean())-float(generated.edad.mean()))/max(float(t["clientes"].edad.mean()),1))
                     run={"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic,"params":selected["params"].copy(),"dataset_role":"clientes TVAE; resto reglas relacionales"}
                     st.session_state.runs.append(run)
                     st.success(f"Dataset '{batch_name}' generado en {generation:.2f}s, sin reentrenar. Integridad básica: {verify(synthetic)}")
                     st.write("Entidades resultantes:",{k:len(v) for k,v in synthetic.items()})
                     st.write("Coincidencias exactas en columnas confidenciales:",conf_check)
+                    st.success("Validaciones superadas: dominios categóricos, referencias entre tablas y coincidencias exactas en campos confidenciales de ejemplo.")
                 except Exception as exc:st.error(f"No se pudo generar: {exc}")
         if st.session_state.runs:
             idx=st.selectbox("Dataset generado para inspeccionar",list(range(len(st.session_state.runs))),format_func=lambda i:f"{st.session_state.runs[i]['nombre']} · {st.session_state.runs[i]['modelo']}")
