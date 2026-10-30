@@ -1,5 +1,6 @@
 """PyC Smart Test Data Lab — demonstration with synthetic-only data."""
 import io
+from datetime import datetime
 import json
 import zipfile
 import sqlite3
@@ -25,6 +26,7 @@ st.markdown("""<style>
 </style>""",unsafe_allow_html=True)
 st.markdown('<div class="hero"><div class="wordmark">PyC</div><h1>Smart Test Data Lab</h1><p>Calidad de datos · Inteligencia sintética · Comparación de escenarios</p></div>',unsafe_allow_html=True)
 st.caption("PoC · Datos 100% ficticios · TVAE sobre clientes; entidades dependientes generadas mediante reglas")
+st.caption("**Última actualización del código: 30/10/2026 · 18:28 (Chile, UTC−3)** · Rama main")
 
 def build_data(n=250, seed=42):
     rng=np.random.default_rng(seed)
@@ -122,7 +124,7 @@ def default_dictionary(tables):
     for entity,df in tables.items():
         for col in df.columns:
             role="Clave primaria" if col==entity[:-1]+"_id" or (entity=="clientes" and col=="cliente_id") else ("Clave foránea" if col.endswith("_id") else ("Numérica" if pd.api.types.is_numeric_dtype(df[col]) else "Categórica"))
-            rows.append({"Entidad":entity,"Columna":col,"Rol":role,"Confidencial":"Sí" if col in CONFIDENTIAL_FIELDS else "No","Tratamiento":"Generar ficticio" if col in CONFIDENTIAL_FIELDS else ("Excluir" if role in ["Clave primaria","Clave foránea"] else "Sintetizar"),"Dominio permitido":DOMAINS.get(col,""),"Aprobado":False})
+            rows.append({"Entidad":entity,"Columna":col,"Rol":role,"Confidencial":"Sí" if col in CONFIDENTIAL_FIELDS else "No","Tratamiento":"Generar ficticio" if col in CONFIDENTIAL_FIELDS else ("Generar clave primaria" if role=="Clave primaria" else ("Asignar clave foránea" if role=="Clave foránea" else "Sintetizar")),"Dominio permitido":DOMAINS.get(col,""),"Aprobado":False})
     return pd.DataFrame(rows)
 
 def dictionary_ready():
@@ -135,6 +137,9 @@ def validate_dictionary(tables,d):
     errors=[]
     if expected!=actual:errors.append("El diccionario no coincide con las columnas de la base activa.")
     if d.duplicated(["Entidad","Columna"]).any():errors.append("Hay columnas duplicadas.")
+    for _,r in d.iterrows():
+        intended={"Clave primaria":"Generar clave primaria","Clave foránea":"Asignar clave foránea"}
+        if r["Rol"] in intended and r["Tratamiento"]!=intended[r["Rol"]]:errors.append(f"{r['Entidad']}.{r['Columna']}: tratamiento esperado {intended[r['Rol']]}")
     if not bool(d["Aprobado"].all()):errors.append("Faltan columnas por revisar y aprobar.")
     if ((d["Confidencial"]=="Sí") & (d["Tratamiento"]=="Conservar")).any():errors.append("No se puede conservar una columna confidencial en una demo pública.")
     for row in d.itertuples(index=False):
@@ -167,11 +172,11 @@ def training_policy(tables,dictionary):
     for col in generated_identifiers:
         if col in customer.index:
             row=customer.loc[col]
-            if row["Tratamiento"] not in ("Generar ficticio","Excluir"):
+            if row["Tratamiento"]!="Generar ficticio":
                 errors.append(f"clientes.{col}: solo se admite Generar ficticio o Excluir")
             if row["Confidencial"]=="Sí" and row["Tratamiento"]!="Generar ficticio":
                 errors.append(f"clientes.{col}: el esquema actual requiere un valor ficticio")
-    if "cliente_id" in customer.index and customer.loc["cliente_id","Tratamiento"]!="Excluir":
+    if "cliente_id" in customer.index and customer.loc["cliente_id","Tratamiento"]!="Generar clave primaria":
         errors.append("clientes.cliente_id debe reconstruirse, no aprenderse")
     # Only the 4 business features are trained, regardless of other metadata fields.
     return errors, required
@@ -236,10 +241,11 @@ elif page=="Diccionario y privacidad":
     scope=dic[dic["Entidad"]==entity].copy()
     scope["Ejemplos"]=[", ".join(df[c].dropna().astype(str).head(3).tolist()) for c in scope["Columna"]]
     st.markdown("**Clasifica las columnas de esta tabla**")
+    st.caption("Las claves primarias se generan nuevas y únicas; las foráneas se asignan desde registros padre existentes. Ninguna se elimina del dataset sintético.")
     edited=st.data_editor(scope,hide_index=True,num_rows="fixed",use_container_width=True,disabled=["Entidad","Columna","Ejemplos"],column_config={
         "Rol":st.column_config.SelectboxColumn("Tipo de columna",options=["Clave primaria","Clave foránea","Numérica","Categórica"]),
         "Confidencial":st.column_config.SelectboxColumn("¿Es confidencial?",options=["Sí","No"]),
-        "Tratamiento":st.column_config.SelectboxColumn("Qué hacer con el dato",options=["Sintetizar","Generar ficticio","Excluir","Conservar"]),
+        "Tratamiento":st.column_config.SelectboxColumn("Qué hacer con el dato",options=["Sintetizar","Generar ficticio","Generar clave primaria","Asignar clave foránea","Excluir del modelo","Conservar"]),
         "Dominio permitido":st.column_config.TextColumn("Valores permitidos (separados por coma)"),
         "Ejemplos":st.column_config.TextColumn("Ejemplos del original"),
         "Aprobado":st.column_config.CheckboxColumn("Clasificación lista")
@@ -250,6 +256,9 @@ elif page=="Diccionario y privacidad":
         candidate=pd.concat([candidate,updated],ignore_index=True)
         errors=[]
         if ((updated["Confidencial"]=="Sí") & (updated["Tratamiento"]=="Conservar")).any():errors.append("Una columna confidencial no puede conservarse sin tratamiento.")
+        expected={"Clave primaria":"Generar clave primaria","Clave foránea":"Asignar clave foránea"}
+        for _,rr in updated.iterrows():
+            if rr["Rol"] in expected and rr["Tratamiento"]!=expected[rr["Rol"]]:errors.append(f"{rr['Columna']}: el tratamiento debe ser {expected[rr['Rol']]}")
         for _,row in updated.iterrows():
             if row["Rol"]=="Categórica" and str(row["Dominio permitido"]).strip():
                 allowed={z.strip() for z in str(row["Dominio permitido"]).split(",") if z.strip()}
@@ -359,9 +368,11 @@ elif page=="Generación":
                     if any(conf_check.values()):raise ValueError(f"Coincidencias confidenciales detectadas: {conf_check}")
                     if not verify(synthetic):raise ValueError("Error de integridad referencial entre las cuatro entidades")
                     score=100*max(0,1-abs(float(t["clientes"].edad.mean())-float(generated.edad.mean()))/max(float(t["clientes"].edad.mean()),1))
-                    run={"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic,"params":selected["params"].copy(),"dataset_role":"clientes TVAE; entidades relacionadas por patrones empíricos observados y reglas contables"}
+                    generated_at=datetime.now().astimezone().isoformat(timespec="seconds")
+                    run={"generado_el":generated_at,"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic,"params":selected["params"].copy(),"dataset_role":"clientes TVAE; entidades relacionadas por patrones empíricos observados y reglas contables"}
                     st.session_state.runs.append(run)
                     st.success(f"Dataset '{batch_name}' generado en {generation:.2f}s, sin reentrenar. Integridad básica: {verify(synthetic)}")
+                    st.write("Fecha y hora de generación:",generated_at)
                     st.write("Entidades resultantes:",{k:len(v) for k,v in synthetic.items()})
                     st.write("Coincidencias exactas en columnas confidenciales:",conf_check)
                     st.success("Validaciones superadas: dominios categóricos, relaciones padre-hijo, coherencia factura/pagos y campos confidenciales ficticios.")
