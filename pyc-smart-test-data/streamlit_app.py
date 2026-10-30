@@ -261,16 +261,19 @@ elif page=="Diccionario y privacidad":
     scope["Ejemplos"]=[", ".join(df[c].dropna().astype(str).head(3).tolist()) for c in scope["Columna"]]
     st.markdown("**Clasifica las columnas de esta tabla**")
     st.caption("Las claves primarias se generan nuevas y únicas; las foráneas se asignan desde registros padre existentes. Ninguna se elimina del dataset sintético.")
-    edited=st.data_editor(scope,hide_index=True,num_rows="fixed",use_container_width=True,disabled=["Entidad","Columna","Ejemplos"],column_config={
+    # La aprobación es por tabla: al guardar una configuración válida,
+    # todas sus columnas quedan marcadas como revisadas automáticamente.
+    scope_editor=scope.drop(columns=["Aprobado"])
+    edited=st.data_editor(scope_editor,hide_index=True,num_rows="fixed",use_container_width=True,disabled=["Entidad","Columna","Ejemplos"],column_config={
         "Rol":st.column_config.SelectboxColumn("Tipo de columna",options=["Clave primaria","Clave foránea","Numérica","Categórica"]),
         "Confidencial":st.column_config.SelectboxColumn("¿Es confidencial?",options=["Sí","No"]),
         "Tratamiento":st.column_config.SelectboxColumn("Qué hacer con el dato",options=["Sintetizar","Generar ficticio","Generar clave primaria","Asignar clave foránea","Excluir del modelo","Conservar"]),
         "Dominio permitido":st.column_config.TextColumn("Valores permitidos (separados por coma)"),
-        "Ejemplos":st.column_config.TextColumn("Ejemplos del original"),
-        "Aprobado":st.column_config.CheckboxColumn("Clasificación lista")
+        "Ejemplos":st.column_config.TextColumn("Ejemplos del original")
     },key=f"dictionary_editor_{entity}")
     if st.button(f"Guardar clasificación de {entity}",type="primary"):
         updated=edited.drop(columns=["Ejemplos"])
+        updated["Aprobado"]=True
         candidate=dic[dic["Entidad"]!=entity]
         candidate=pd.concat([candidate,updated],ignore_index=True)
         errors=[]
@@ -290,7 +293,7 @@ elif page=="Diccionario y privacidad":
             st.session_state.runs=[]
             st.success(f"Configuración de {entity} guardada.")
     count=int(st.session_state.dictionary.groupby("Entidad")["Aprobado"].all().sum())
-    st.caption(f"Tablas completamente clasificadas: {count} de {len(t)}. La aprobación general se completa cuando todas las tablas quedan configuradas.")
+    st.caption(f"Tablas completamente clasificadas: {count} de {len(t)}. Guardar una tabla válida la marca automáticamente como revisada.")
     st.warning("La PoC todavía solo entrena los campos no sensibles de Clientes. Los otros campos y entidades no están aún integrados en el aprendizaje relacional del modelo. La protección de datos reales requiere controles adicionales.")
 elif page=="Exploración":
     st.title("Exploración y criterios de preservación")
