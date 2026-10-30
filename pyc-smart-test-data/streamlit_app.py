@@ -49,7 +49,42 @@ st.markdown("""<style>
     padding:14px 16px;box-shadow:0 4px 14px rgba(0,0,0,.04)
 }
 [data-testid="stDataFrame"]{
-    border:1px solid #e5e7eb;border-radius:14px;overflow:hidden
+    border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;
+    box-shadow:0 4px 14px rgba(23,38,88,.04)
+}
+[data-testid="stPlotlyChart"]{
+    background:#fff;border:1px solid #e8edf5;border-radius:18px;
+    padding:10px 10px 2px 10px;box-shadow:0 8px 24px rgba(23,38,88,.05)
+}
+.stButton>button{
+    border-radius:12px!important;border:0!important;
+    background:linear-gradient(135deg,#2f4f9d,#172658)!important;
+    color:white!important;font-weight:700!important;
+    padding:.6rem 1.05rem!important;box-shadow:0 6px 14px rgba(23,38,88,.16)!important
+}
+.stButton>button:hover{transform:translateY(-1px)}
+[data-testid="stDownloadButton"]>button{
+    border-radius:12px!important;border:1px solid #cfd8ee!important;
+    background:#fff!important;color:#172658!important;font-weight:700!important
+}
+[data-testid="stTabs"] button{
+    font-weight:700!important;color:#43506f!important;padding:.7rem 1rem!important
+}
+[data-testid="stTabs"] button[aria-selected="true"]{
+    color:#172658!important;border-bottom-color:#2f4f9d!important
+}
+div[data-baseweb="select"]>div{
+    border-radius:12px!important;border-color:#d9e2f2!important
+}
+[data-testid="stExpander"]{
+    border:1px solid #e4eaf5!important;border-radius:14px!important;
+    background:#fff!important
+}
+.app-section-title{
+    font-size:1.45rem;font-weight:800;color:#172658;margin:.2rem 0 .25rem 0
+}
+.app-section-sub{
+    color:#667085;font-size:.96rem;margin-bottom:1rem
 }
 </style>""",unsafe_allow_html=True)
 st.markdown('<div class="hero"><div class="wordmark">PyC</div><h1>Smart Test Data Lab</h1><p>Calidad de datos · Inteligencia sintética · Comparación de escenarios</p></div>',unsafe_allow_html=True)
@@ -72,6 +107,33 @@ if head_sha:
     st.caption(f"**GitHub main:** {head_sha} · Último commit: {head_date} (Chile) · Consulta actualizada cada 5 min")
 else:
     st.caption("**GitHub main:** versión no disponible temporalmente · Revisa el historial de commits")
+
+PYC_COLORS=["#172658","#2f4f9d","#6f8fe8","#56b4a9","#8fb7ff","#d6def5"]
+
+def style_fig(fig,title=None):
+    fig.update_layout(
+        template="plotly_white",
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(family="Arial, sans-serif",size=13,color="#26324a"),
+        title=dict(text=title if title is not None else fig.layout.title.text,x=.02,xanchor="left",font=dict(size=20,color="#172658")),
+        margin=dict(l=24,r=20,t=62,b=28),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",y=1.02,
+            xanchor="right",x=1,
+            bgcolor="rgba(255,255,255,0)"
+        ),
+        hoverlabel=dict(bgcolor="white",font_size=13,font_color="#172658"),
+    )
+    fig.update_xaxes(showgrid=False,linecolor="#dfe5f0",tickfont=dict(color="#52606d"),title_font=dict(color="#52606d"))
+    fig.update_yaxes(showgrid=True,gridcolor="#edf1f7",zeroline=False,tickfont=dict(color="#52606d"),title_font=dict(color="#52606d"))
+    return fig
+
+def section_header(title,subtitle=""):
+    st.markdown(f'<div class="app-section-title">{title}</div>',unsafe_allow_html=True)
+    if subtitle:
+        st.markdown(f'<div class="app-section-sub">{subtitle}</div>',unsafe_allow_html=True)
 
 def build_data(n=250, seed=42):
     rng=np.random.default_rng(seed)
@@ -397,7 +459,7 @@ page=st.sidebar.radio("Secciones",["Base de datos","Diccionario y privacidad","E
 render_exeia(page)
 t=st.session_state.tables
 if page=="Base de datos":
-    st.subheader("Modelo: Clientes → Ventas → Facturas → Pagos")
+    section_header("Base de datos","Modelo relacional de demostración: Clientes → Ventas → Facturas → Pagos")
     n=st.number_input("Clientes ficticios",min_value=50,max_value=2000,value=250,step=50)
     seed=st.number_input("Semilla",min_value=0,value=42)
     if st.button("Crear base de datos ficticia"):
@@ -417,7 +479,7 @@ if page=="Base de datos":
     st.download_button("Descargar SQLite",buf.getvalue(),"pyc_demo.sqlite","application/x-sqlite3")
     st.info("Los datos de ejemplo son inventados. Puedes seleccionar y leer cada entidad desde SQLite.")
 elif page=="Diccionario y privacidad":
-    st.subheader("Configurar datos por tabla")
+    section_header("Diccionario y privacidad","Clasifica columnas, confidencialidad y tratamiento antes del entrenamiento")
     st.write("**1. Elige la tabla. 2. Revisa las columnas y sus valores. 3. Clasifica las columnas que quieras proteger o controlar. 4. Guarda la configuración de esa tabla.**")
     st.info("Puedes configurar una tabla a la vez. Nombre, email, dirección y teléfono aparecen sugeridos como confidenciales. No subas datos personales reales a esta demo pública.")
     entity=st.selectbox("Tabla que deseas configurar",list(t),format_func=lambda x:x.capitalize(),key="dictionary_entity")
@@ -465,7 +527,7 @@ elif page=="Diccionario y privacidad":
     st.caption(f"Tablas completamente clasificadas: {count} de {len(t)}. Guardar una tabla válida la marca automáticamente como revisada.")
     st.warning("La PoC todavía solo entrena los campos no sensibles de Clientes. Los otros campos y entidades no están aún integrados en el aprendizaje relacional del modelo. La protección de datos reales requiere controles adicionales.")
 elif page=="Exploración":
-    st.title("Exploración y criterios de preservación")
+    section_header("Exploración y criterios de preservación","Define qué comportamiento del dataset original debe conservarse")
     st.markdown("**Objetivo:** entender el dataset original y decidir qué características deben conservar los datos sintéticos. Los criterios definidos se guardan en esta sesión para comparar los experimentos.")
     name=st.selectbox("Tabla original a analizar",list(t),key="eda_tabla")
     df=t[name]
@@ -505,17 +567,22 @@ elif page=="Exploración":
         else:
             counts=df[field].value_counts(dropna=False).head(20).rename_axis("Valor").reset_index(name="Registros")
             fig=px.bar(counts,x="Valor",y="Registros",title=f"Dominio y frecuencias · {field}")
+        fig=style_fig(fig)
         st.plotly_chart(fig,use_container_width=True)
     with c2:
         if len(numeric)>1:
             corr=df[numeric].corr().fillna(0)
-            st.plotly_chart(px.imshow(corr,text_auto=True,title="Correlaciones numéricas"),use_container_width=True)
+            fig_corr=px.imshow(corr,text_auto=True,color_continuous_scale=["#eef3ff","#8fb7ff","#172658"])
+            fig_corr=style_fig(fig_corr,"Correlaciones numéricas")
+            st.plotly_chart(fig_corr,use_container_width=True)
         else:
             st.info("Esta entidad no tiene dos variables numéricas de negocio para calcular correlaciones.")
     c3,c4=st.columns(2)
     with c3:
         nulls=df.isna().sum().sort_values(ascending=False)
-        st.plotly_chart(px.bar(x=nulls.index,y=nulls.values,labels={"x":"Columna","y":"Nulos"},title="Valores faltantes"),use_container_width=True)
+        fig_nulls=px.bar(x=nulls.index,y=nulls.values,labels={"x":"Columna","y":"Nulos"},color_discrete_sequence=["#2f4f9d"])
+        fig_nulls=style_fig(fig_nulls,"Valores faltantes")
+        st.plotly_chart(fig_nulls,use_container_width=True)
     with c4:
         out=[]
         for col in numeric:
@@ -649,24 +716,28 @@ elif page=="Generación":
             st.download_button("Exportar experimento completo (ZIP)",archive.getvalue(),file_name=f"experimento_{idx+1}.zip",mime="application/zip",help="Permite conservar los CSV y parámetros fuera de Streamlit. No incluye los pesos entrenados del modelo.")
 
 elif page=="Comparar experimentos":
-    st.subheader("Historial en la sesión")
+    section_header("Comparar experimentos","Revisa cómo cambian los resultados entre corridas")
     if not st.session_state.runs:st.info("Primero ejecuta al menos una generación.")
     else:
         rows=[{k:v for k,v in x.items() if k!="tables"} for x in st.session_state.runs]
         df=pd.DataFrame(rows);st.dataframe(df,use_container_width=True)
         st.markdown("**Parámetros asociados a cada dataset generado**")
         st.dataframe(pd.DataFrame([{"Experimento":x["nombre"],"Modelo":x["modelo"],**x.get("params",{})} for x in st.session_state.runs]).drop(columns=["diccionario"],errors="ignore"),use_container_width=True)
-        st.plotly_chart(px.line(df.reset_index(),x="index",y=["edad_media_similitud"],markers=True,title="Indicador orientativo por experimento"),use_container_width=True)
+        fig_hist=px.line(df.reset_index(),x="index",y=["edad_media_similitud"],markers=True,color_discrete_sequence=["#2f4f9d"])
+        fig_hist=style_fig(fig_hist,"Indicador orientativo por experimento")
+        fig_hist.update_traces(line=dict(width=3),marker=dict(size=9))
+        st.plotly_chart(fig_hist,use_container_width=True)
         chosen=st.selectbox("Experimento",range(len(st.session_state.runs)),format_func=lambda i:f"Experimento {i+1}")
         syn=st.session_state.runs[chosen]["tables"]["clientes"]
         orig=t["clientes"]
         joined=pd.concat([orig.assign(origen="Original"),syn.assign(origen="Sintético")])
-        st.plotly_chart(px.histogram(joined,x="edad",color="origen",barmode="overlay"),use_container_width=True)
+        fig_joined=px.histogram(joined,x="edad",color="origen",barmode="overlay",opacity=.68,color_discrete_map={"Original":"#172658","Sintético":"#56b4a9"})
+        fig_joined=style_fig(fig_joined,"Distribución de edad · original vs sintético")
+        st.plotly_chart(fig_joined,use_container_width=True)
         st.caption("Esta comparación es ilustrativa, no reproduce las siete métricas completas del Capstone ni certifica privacidad.")
 
 elif page=="7 métricas QE":
-    st.subheader("Panel comparativo de calidad sintética")
-    st.caption("Lectura ejecutiva de las siete dimensiones: datos originales frente a datos sintéticos.")
+    section_header("Panel comparativo de calidad sintética","Lectura ejecutiva de las siete dimensiones: datos originales frente a sintéticos")
     if not st.session_state.runs:
         st.warning("Entrena primero un modelo en Entrenamiento y después genera un dataset en Generación.")
     else:
@@ -732,14 +803,8 @@ elif page=="7 métricas QE":
                 title="Perfil de calidad de la corrida"
             )
             fig.update_traces(texttemplate="%{text:.1f}",textposition="outside")
-            fig.update_layout(
-                template="plotly_white",
-                coloraxis_showscale=False,
-                margin=dict(l=20,r=20,t=60,b=20),
-                font=dict(color="#26324a"),
-                plot_bgcolor="white",
-                paper_bgcolor="white"
-            )
+            fig=style_fig(fig,"Perfil de calidad de la corrida")
+            fig.update_layout(coloraxis_showscale=False)
             fig.update_yaxes(gridcolor="#edf0f6",title="Puntuación")
             fig.update_xaxes(title="")
             st.plotly_chart(fig,use_container_width=True)
@@ -789,7 +854,7 @@ elif page=="7 métricas QE":
                     color_discrete_map={"Original":"#172658","Sintético":"#56b4a9"},
                     title=f"Distribución comparada · {field}"
                 )
-                fig.update_layout(template="plotly_white",margin=dict(l=20,r=20,t=60,b=20))
+                fig=style_fig(fig,f"Distribución comparada · {field}")
                 st.plotly_chart(fig,use_container_width=True)
 
         with tab4:
