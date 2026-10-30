@@ -274,15 +274,81 @@ elif page=="Diccionario y privacidad":
     st.caption(f"Tablas completamente clasificadas: {count} de {len(t)}. La aprobación general se completa cuando todas las tablas quedan configuradas.")
     st.warning("La PoC todavía solo entrena los campos no sensibles de Clientes. Los otros campos y entidades no están aún integrados en el aprendizaje relacional del modelo. La protección de datos reales requiere controles adicionales.")
 elif page=="Exploración":
-    name=st.selectbox("Entidad",list(t))
+    st.title("Exploración y criterios de preservación")
+    st.markdown("**Objetivo:** entender el dataset original y decidir qué características deben conservar los datos sintéticos. Los criterios definidos se guardan en esta sesión para comparar los experimentos.")
+    name=st.selectbox("Tabla original a analizar",list(t),key="eda_tabla")
     df=t[name]
-    st.dataframe(df.head(30),use_container_width=True)
-    column=st.selectbox("Variable",df.columns.tolist())
-    if pd.api.types.is_numeric_dtype(df[column]):
-        st.plotly_chart(px.histogram(df,x=column,title="Distribución: "+column),use_container_width=True)
-    else:
-        st.plotly_chart(px.bar(df[column].value_counts().reset_index(),x=column,y="count"),use_container_width=True)
-    st.write("Nulos:",int(df.isna().sum().sum())," · Filas:",len(df)," · Duplicados:",int(df.duplicated().sum()))
+    numeric=[c for c in df.select_dtypes(include="number").columns if not c.endswith("_id")]
+    cats=[c for c in df.columns if c not in numeric and not c.endswith("_id")]
+    a,b,c,d=st.columns(4)
+    a.metric("Registros",len(df));b.metric("Columnas",len(df.columns))
+    c.metric("Nulos",int(df.isna().sum().sum()));d.metric("Duplicados",int(df.duplicated().sum()))
+    st.subheader("1. ¿Qué características queremos conservar?")
+    criteria={
+      "Distribuciones numéricas":"Mantener rangos, dispersión y comportamiento de montos o edades.",
+      "Categorías y dominios":"Respetar códigos permitidos y conservar su variedad y frecuencia.",
+      "Correlaciones":"Mantener relaciones entre variables relevantes.",
+      "Casos extremos":"Conservar escenarios de borde y valores elevados válidos.",
+      "Valores nulos":"Mantener patrones de ausencia de información.",
+      "Integridad relacional":"Mantener relaciones Clientes → Ventas → Facturas → Pagos."
+    }
+    if "eda_config" not in st.session_state:st.session_state.eda_config={}
+    if name not in st.session_state.eda_config:
+        st.session_state.eda_config[name]={k:{"activo":True,"prioridad":"Media","observacion":""} for k in criteria}
+    cfg=st.session_state.eda_config[name]
+    st.caption("Activa las características relevantes y asigna prioridad. Estos criterios permiten interpretar las métricas, no modifican por sí solos el algoritmo de entrenamiento.")
+    for i,(k,desc) in enumerate(criteria.items()):
+        with st.expander(k,expanded=i<2):
+            x,y=st.columns([1,1])
+            with x:cfg[k]["activo"]=st.checkbox("Preservar",value=cfg[k]["activo"],key=f"pres_{name}_{i}")
+            with y:cfg[k]["prioridad"]=st.selectbox("Prioridad",["Alta","Media","Baja"],index=["Alta","Media","Baja"].index(cfg[k]["prioridad"]),key=f"pri_{name}_{i}")
+            st.caption(desc)
+            cfg[k]["observacion"]=st.text_input("Criterio / comentario",value=cfg[k]["observacion"],key=f"obs_{name}_{i}",placeholder="Ej.: conservar clientes multiproducto y montos extremos")
+    st.session_state.eda_config[name]=cfg
+    st.subheader("2. Evidencia del dataset original")
+    field=st.selectbox("Variable a explorar",numeric+cats if numeric+cats else list(df.columns),key=f"field_{name}")
+    c1,c2=st.columns(2)
+    with c1:
+        if field in numeric:
+            fig=px.histogram(df,x=field,nbins=30,marginal="box",title=f"Distribución · {field}")
+        else:
+            counts=df[field].value_counts(dropna=False).head(20).rename_axis("Valor").reset_index(name="Registros")
+            fig=px.bar(counts,x="Valor",y="Registros",title=f"Dominio y frecuencias · {field}")
+        st.plotly_chart(fig,use_container_width=True)
+    with c2:
+        if len(numeric)>1:
+            corr=df[numeric].corr().fillna(0)
+            st.plotly_chart(px.imshow(corr,text_auto=True,title="Correlaciones numéricas"),use_container_width=True)
+        else:
+            st.info("Esta entidad no tiene dos variables numéricas de negocio para calcular correlaciones.")
+    c3,c4=st.columns(2)
+    with c3:
+        nulls=df.isna().sum().sort_values(ascending=False)
+        st.plotly_chart(px.bar(x=nulls.index,y=nulls.values,labels={"x":"Columna","y":"Nulos"},title="Valores faltantes"),use_container_width=True)
+    with c4:
+        out=[]
+        for col in numeric:
+            v=pd.to_numeric(df[col],errors="coerce").dropna()
+            if len(v)>3:
+                q1,q3=v.quantile(.25),v.quantile(.75);iqr=q3-q1
+                out.append({"Variable":col,"Casos extremos":int(((v<q1-1.5*iqr)|(v>q3+1.5*iqr)).sum()) if iqr>0 else 0})
+        if out:st.plotly_chart(px.bar(pd.DataFrame(out),x="Variable",y="Casos extremos",title="Valores extremos (criterio IQR)"),use_container_width=True)
+        else:st.info("No hay variables numéricas de negocio suficientes para detectar valores extremos.")
+    st.subheader("3. Integridad entre entidades")
+    st.metric("Relaciones básicas","Correctas" if verify(t) else "Revisar")
+    rel=[]
+    for parent,child,key in [("clientes","ventas","cliente_id"),("ventas","facturas","venta_id"),("facturas","pagos","factura_id")]:
+        counts=t[child].groupby(key).size()
+        rel.append({"Relación":parent+" → "+child,"Registros padre":len(t[parent]),"Registros hijo":len(t[child]),"Hijos por padre (promedio sobre padres con hijos)":round(float(counts.mean()),2) if len(counts) else 0})
+    st.dataframe(pd.DataFrame(rel),use_container_width=True,hide_index=True)
+    st.subheader("4. Resumen de criterios definidos")
+    chosen=[{"Característica":k,"Prioridad":v["prioridad"],"Observación":v["observacion"] or "—"} for k,v in cfg.items() if v["activo"]]
+    st.dataframe(pd.DataFrame(chosen) if chosen else pd.DataFrame(columns=["Característica","Prioridad","Observación"]),use_container_width=True,hide_index=True)
+    if st.button("Guardar criterios de exploración",type="primary"):
+        st.session_state.eda_config[name]=cfg
+        st.success("Criterios guardados en esta sesión. Podrás consultarlos al interpretar las siete métricas.")
+    with st.expander("Ver registros originales"):
+        st.dataframe(df.head(100),use_container_width=True)
 elif page=="Entrenamiento":
     st.subheader("01 · Entrenamiento de TVAE")
     st.markdown("El entrenamiento aprende patrones estadísticos del dataset original. **No genera todavía nuevos registros**. Al terminar, el modelo queda disponible para ejecutar diferentes generaciones.")
