@@ -892,3 +892,5 @@ elif page=="7 métricas QE":
                 st.info("El control explícito de coincidencias confidenciales está implementado actualmente para la entidad Clientes.")
 
         st.caption("MET1, MET5 y MET6 pueden no aplicar cuando la entidad no tiene suficientes variables numéricas de negocio comparables. Estas métricas son demostrativas y no certifican privacidad ni utilidad funcional.")
+
+# redeploy trigger 2026-11-03
