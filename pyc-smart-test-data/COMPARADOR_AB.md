@@ -1,16 +1,19 @@
 # Comparador A/B — PyC Smart Test Data Lab
 
-Pantalla adicional de **solo lectura** para las generaciones de la demo relacional.
-No sustituye `Comparar experimentos` ni `7 métricas QE`, no entrena modelos y no
-interviene en el módulo mainframe. No se cambian las dependencias.
+Comparador de **solo lectura** para las generaciones de la demo relacional.
+Se abre desde **Comparar experimentos** en la navegación de la demo o desde la
+página adicional **Comparador AB**. Ambos accesos usan el mismo comparador.
+El antiguo comparativo limitado a edad ya no se presenta como comparación de
+experimentos. No entrena modelos ni interviene en el módulo mainframe.
+No se cambian las dependencias ni las fórmulas de la pantalla 7 métricas QE.
 
 ## Uso
 
 1. En la demo relacional, entrenar uno o varios modelos.
 2. En Generación, producir al menos dos datasets en la misma sesión, con el mismo
    modelo o con modelos diferentes. Entrenar dos modelos no crea sus datasets.
-3. Abrir **Comparador AB** en el menú de páginas de Streamlit (el título interior
-   es **Comparador A/B**). Elegir A, B y la entidad.
+3. Abrir **Comparar experimentos** en el menú de la demo relacional. Elegir A, B y
+   la entidad. También sigue disponible **Comparador AB** en el menú de páginas.
 4. Revisar **Resumen**, **Parámetros**, **Métricas** y **Datos**.
 
 A es la referencia de la comparación y B el candidato, no el original. Las dos
@@ -18,6 +21,7 @@ puntuaciones se calculan contra el **original activo de la sesión**. Ninguna
 acción de esta pantalla borra ni modifica tablas, diccionarios, modelos o corridas.
 Si no hay dos generaciones, muestra instrucciones; no inventa resultados de ejemplo.
 El historial se mantiene únicamente en la sesión y puede perderse tras reiniciar.
+En la demo actual, el original es una base ficticia; no se afirma cargar datos reales.
 
 ## Qué muestra
 
@@ -63,34 +67,48 @@ No hay correspondencia persona-a-persona ni fila-a-fila entre Original, A y B.
 ## Conservación de las fórmulas y aislamiento
 
 `comparison_core.assess_seven` es una copia literal de la función existente de
-`streamlit_app.py` (blob `74b0b447399b7a7827da5a26b9fce01b5641f55c`). La página verifica
-el árbol sintáctico de ambas funciones y las descripciones **antes de puntuar**.
-Si divergen o no puede leer la fuente, se detiene, en vez de mezclar versiones.
-No se ejecuta código del archivo leído ni se importa la app original o SDV.
-La duplicación explícita evita editar la app existente en esta entrega aditiva;
-una centralización futura requiere migración y pruebas propias.
+`streamlit_app.py` (blob original `74b0b447399b7a7827da5a26b9fce01b5641f55c`).
+La página verifica el árbol sintáctico de ambas funciones y las descripciones
+**antes de puntuar**. Si divergen o no puede leer la fuente, se detiene, en vez de
+mezclar versiones. No se ejecuta código del archivo leído ni se importa la app
+original o SDV desde el comparador.
+Una centralización futura de las fórmulas requiere migración y pruebas propias.
 
-Todo el estado de widgets empieza por `ab_`. Solo se leen `tables` y `runs`.
-La nueva página no escribe archivos de datos en servidor, no usa caché global de
-datasets, ni publica datos en GitHub. Las descargas ocurren bajo acción del usuario;
-los textos con prefijos de fórmula se neutralizan en CSV, no en memoria de origen.
-Nombres introducidos por el usuario se escapan en las tarjetas HTML.
+El cambio de acceso en `streamlit_app.py` se limita al bloque Comparar experimentos
+y su ayuda contextual. Las otras seis secciones se mantienen idénticas a la base
+71e4fea4, incluyendo entrenamiento, generación, diccionario y 7 métricas QE.
+No se modifica el cálculo legado de edad guardado en los metadatos de una corrida;
+ese valor ya no es el gráfico principal de Comparar experimentos.
+
+Todo el estado de widgets del comparador empieza por `ab_`. Solo se leen `tables`
+y `runs`. La nueva página no escribe archivos de datos en servidor, no usa caché
+global de datasets ni publica datos en GitHub. Las descargas ocurren bajo acción
+del usuario; los textos con prefijos de fórmula se neutralizan en CSV, no en memoria
+de origen. Nombres introducidos por el usuario se escapan en las tarjetas HTML.
 
 ## Validación
 
 ```sh
 python -m unittest discover -s pyc-smart-test-data/tests -p 'test_comparison.py' -v
+python -m unittest discover -s pyc-smart-test-data/tests -p 'test_comparison_entrypoint.py' -v
 ```
 
-Las pruebas cubren cálculo y dirección de diferencias, N/A, columnas faltantes,
-proveniencia, parámetros, histogramas de tamaños desiguales, nulos, extremos,
-CSV y no mutación del estado. La prueba de equivalencia necesita el archivo
-original `streamlit_app.py` al lado del módulo.
+Las pruebas originales cubren cálculo y dirección de diferencias, N/A, columnas
+faltantes, proveniencia, parámetros, histogramas de tamaños desiguales, nulos,
+extremos, CSV y no mutación del estado. La equivalencia necesita `streamlit_app.py`
+al lado del módulo.
 
-Las pruebas de recorrido UI usan un **stub de Streamlit**, no AppTest ni una sesión
-real. También se revisó el HTML/CSS y Plotly en Chromium con tamaños de escritorio
-y tablet; eso no sustituye validar la integración en Streamlit Cloud.
+La corrección del acceso pasó 10 pruebas locales nuevas. Ejecutan las fórmulas
+reales sobre datos inventados, comprueban MET1–MET7 A/original y B/original,
+verifican que edades iguales no oculten cambios en categorías o relaciones,
+y conservan No aplica sin sustituirlo por cero. La llamada de navegación usa un
+spy controlado, no un navegador ni Streamlit real. Las seis secciones no modificadas
+se contrastan por huella de texto contra la base anterior.
+
+Las pruebas de recorrido UI originales usan un **stub de Streamlit**, no AppTest
+ni una sesión real. La revisión previa de HTML/CSS y Plotly en Chromium no sustituye
+validar la integración en Streamlit Cloud.
 No se ejecutó entrenamiento TVAE nuevo ni se ensayó un despliegue z/OS.
 La prueba final en Cloud debe confirmar navegación desde y hacia la demo relacional,
-selección de dos generaciones reales, ambas entidades con/sin MET1 aplicable,
+selección de dos generaciones reales, entidades con/sin MET1 aplicable,
 filtros, descargas y conservación del espacio mainframe.

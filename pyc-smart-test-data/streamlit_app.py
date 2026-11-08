@@ -398,8 +398,8 @@ EXEIA_HELP={
     },
     "Comparar experimentos":{
         "titulo":"Comparar experimentos",
-        "explicacion":"Aquí comparas las corridas generadas durante la sesión y revisas cómo cambian sus resultados según parámetros, tamaño del dataset o entrenamiento utilizado.",
-        "tip":"Compara siempre experimentos que tengan una diferencia concreta de parámetros para que la conclusión sea útil."
+        "explicacion":"Selecciona dos generaciones y una entidad. Compara MET1–MET7 de A y de B contra los mismos datos originales activos, revisa la diferencia B menos A y los parámetros que cambiaron. No es una comparación limitada a la edad.",
+        "tip":"Necesitas dos generaciones de datos en esta sesión. Revisa Resumen y Métricas para las siete puntuaciones; Datos muestra Original, A y B. No aplica no significa cero."
     },
     "7 métricas QE":{
         "titulo":"7 métricas QE",
@@ -446,7 +446,7 @@ def render_exeia(page):
                 "Exploración":"Preservar utilidad significa mantener patrones relevantes, no copiar registros originales.",
                 "Entrenamiento":"Entrenar ajusta el modelo a los patrones del dataset; generar crea nuevas observaciones a partir de ese aprendizaje.",
                 "Generación":"Una misma versión entrenada puede producir múltiples datasets sintéticos distintos.",
-                "Comparar experimentos":"Un experimento solo es comparable si conoces qué parámetro o condición cambió entre corridas.",
+                "Comparar experimentos":"Cada puntuación compara una generación con el original activo. La diferencia B menos A se expresa en puntos por métrica, no como calidad global ni como prueba de causalidad.",
                 "7 métricas QE":"Las métricas deben interpretarse como un conjunto; ninguna aislada representa por sí sola la calidad total."
             }[page]
             st.warning(concept)
@@ -734,25 +734,10 @@ elif page=="Generación":
             st.download_button("Exportar experimento completo (ZIP)",archive.getvalue(),file_name=f"experimento_{idx+1}.zip",mime="application/zip",help="Permite conservar los CSV y parámetros fuera de Streamlit. No incluye los pesos entrenados del modelo.")
 
 elif page=="Comparar experimentos":
-    section_header("Comparar experimentos","Revisa cómo cambian los resultados entre corridas")
-    if not st.session_state.runs:st.info("Primero ejecuta al menos una generación.")
-    else:
-        rows=[{k:v for k,v in x.items() if k!="tables"} for x in st.session_state.runs]
-        df=pd.DataFrame(rows);st.dataframe(df,use_container_width=True)
-        st.markdown("**Parámetros asociados a cada dataset generado**")
-        st.dataframe(pd.DataFrame([{"Experimento":x["nombre"],"Modelo":x["modelo"],**x.get("params",{})} for x in st.session_state.runs]).drop(columns=["diccionario"],errors="ignore"),use_container_width=True)
-        fig_hist=px.line(df.reset_index(),x="index",y=["edad_media_similitud"],markers=True,color_discrete_sequence=["#2f4f9d"])
-        fig_hist=style_fig(fig_hist,"Indicador orientativo por experimento")
-        fig_hist.update_traces(line=dict(width=3),marker=dict(size=9))
-        st.plotly_chart(fig_hist,use_container_width=True)
-        chosen=st.selectbox("Experimento",range(len(st.session_state.runs)),format_func=lambda i:f"Experimento {i+1}")
-        syn=st.session_state.runs[chosen]["tables"]["clientes"]
-        orig=t["clientes"]
-        joined=pd.concat([orig.assign(origen="Original"),syn.assign(origen="Sintético")])
-        fig_joined=px.histogram(joined,x="edad",color="origen",barmode="overlay",opacity=.68,color_discrete_map={"Original":"#172658","Sintético":"#56b4a9"})
-        fig_joined=style_fig(fig_joined,"Distribución de edad · original vs sintético")
-        st.plotly_chart(fig_joined,use_container_width=True)
-        st.caption("Esta comparación es ilustrativa, no reproduce las siete métricas completas del Capstone ni certifica privacidad.")
+    # Single entry point: compare MET1-MET7 for A/original and B/original.
+    # Reuse the read-only comparator without redirecting or resetting the session.
+    from comparison_ui import render_comparator
+    render_comparator()
 
 elif page=="7 métricas QE":
     section_header("Panel comparativo de calidad sintética","Lectura ejecutiva de las siete dimensiones: datos originales frente a sintéticos")
