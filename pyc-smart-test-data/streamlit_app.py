@@ -14,7 +14,7 @@ import streamlit as st
 from sdv.metadata import SingleTableMetadata
 from sdv.single_table import TVAESynthesizer
 from relational import generate_children, verify_relations
-from model_library import ModelLibrary, LibraryError, capture_model, activate, fingerprint, MAX_BYTES
+from model_library import ModelLibrary, LibraryError, capture_model, activate, fingerprint, policy_signature, MAX_BYTES
 from pathlib import Path
 import os
 import secrets
@@ -540,11 +540,14 @@ elif page=="Diccionario y privacidad":
                 if not observed.issubset(allowed):errors.append(f"{row['Columna']}: hay valores originales fuera del dominio declarado")
         if errors:st.error("; ".join(errors))
         else:
+            policy_changed = policy_signature(st.session_state.dictionary) != policy_signature(candidate)
             st.session_state.dictionary=candidate
-            st.session_state.models=[]
-            st.success(f"Configuración de {entity} guardada.")
-            if st.session_state.runs:
-                st.caption("Los experimentos ya generados se conservan como historial. Para nuevas generaciones debes volver a entrenar.")
+            if policy_changed:
+                st.session_state.models=[]
+                st.session_state.pop("quick_backup_prepared", None)
+            st.success(f"Configuración de {entity} guardada." + (" Se invalidaron modelos de la sesión al cambiar la política." if policy_changed else " No se eliminaron modelos porque la política no cambió."))
+            if policy_changed and st.session_state.runs:
+                st.caption("Los experimentos anteriores siguen disponibles como historial. Para nuevas generaciones vuelve a cargar un modelo compatible o entrena.")
     count=int(st.session_state.dictionary.groupby("Entidad")["Aprobado"].all().sum())
     st.caption(f"Tablas completamente clasificadas: {count} de {len(t)}. Guardar una tabla válida la marca automáticamente como revisada.")
     st.warning("La PoC todavía solo entrena los campos no sensibles de Clientes. Los otros campos y entidades no están aún integrados en el aprendizaje relacional del modelo. La protección de datos reales requiere controles adicionales.")
