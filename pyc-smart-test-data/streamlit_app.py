@@ -702,7 +702,7 @@ elif page=="Entrenamiento":
         minmax=st.checkbox("Respetar mínimo y máximo numérico observado",value=True,help="Durante el posprocesamiento, limita valores numéricos a los límites observados. Puede recortar extremos.")
         rounding=st.checkbox("Conservar redondeo numérico",value=True,help="Intenta devolver los valores numéricos con una precisión equivalente a la de origen.")
         st.caption("La semilla es reproducibilidad, no calidad. El número de filas sintéticas se define en Generación y NO requiere reentrenar.")
-    if st.button("Entrenar y guardar modelo",type="primary"):
+    if st.button("Entrenar y guardar modelo",type="primary",disabled=not bool(quick_store and quick_store.stable),help="Se habilita solo cuando se pueda descargar y recuperar el modelo entrenado."):
         if not dictionary_ready() or validate_dictionary(t,st.session_state.dictionary):
             st.error("Revisa y aprueba el diccionario de columnas en Diccionario y privacidad antes de entrenar.")
             st.stop()
