@@ -14,6 +14,10 @@ import streamlit as st
 from sdv.metadata import SingleTableMetadata
 from sdv.single_table import TVAESynthesizer
 from relational import generate_children, verify_relations
+from model_library import ModelLibrary, LibraryError, capture_model, activate, fingerprint, MAX_BYTES
+from pathlib import Path
+import os
+import secrets
 
 st.set_page_config(page_title="PyC Smart Test Data Lab", page_icon="🧪", layout="wide")
 st.markdown("""<style>
@@ -629,6 +633,44 @@ elif page=="Entrenamiento":
     st.subheader("01 · Entrenamiento de TVAE")
     st.markdown("El entrenamiento aprende patrones estadísticos del dataset original. **No genera todavía nuevos registros**. Al terminar, el modelo queda disponible para ejecutar diferentes generaciones.")
     st.info("En esta primera PoC se entrena exclusivamente la tabla Clientes, sin cliente_id. Ventas, Facturas y Pagos siguen siendo construidas mediante reglas de ejemplo. No es todavía un modelo generativo relacional.")
+    # No access-code folders: the browser backup is the portable source of truth.
+    # Serialized models are imported ONLY after a server-side HMAC verification.
+    try:
+        signing_key = os.environ.get("PYC_MODEL_SIGNING_KEY") or st.secrets.get("PYC_MODEL_SIGNING_KEY")
+    except Exception:
+        signing_key = os.environ.get("PYC_MODEL_SIGNING_KEY")
+    try:
+        quick_store = ModelLibrary(Path.home() / ".pyc-model-library", signing_key)
+    except LibraryError as exc:
+        st.error(f"Configuración de respaldos: {exc}")
+        quick_store = None
+    with st.expander("📂 Cargar un modelo guardado en mi computador", expanded=not bool(st.session_state.models)):
+        st.write("Selecciona un archivo **.pycmodel** exportado por esta aplicación. Recupera el modelo, su base y el diccionario, sin entrenar de nuevo.")
+        quick_upload = st.file_uploader("Archivo de modelo", type=["pycmodel"], key="quick_model_upload")
+        replace_context = st.checkbox("Acepto recuperar también la base y el diccionario del respaldo si son distintos de los actuales", key="quick_model_replace")
+        if st.button("Cargar modelo y utilizarlo", disabled=quick_upload is None or not bool(quick_store and quick_store.stable), key="quick_model_load"):
+            try:
+                if quick_upload.size > MAX_BYTES:
+                    raise LibraryError("El respaldo supera el tamaño máximo permitido.")
+                recovered = quick_store.decode(quick_upload.getvalue())
+                activate(st.session_state, recovered, replace_reference=replace_context)
+                st.session_state.pop("quick_backup_prepared", None)
+                st.session_state["quick_restore_ok"] = recovered["model"].get("name", "Modelo")
+                st.rerun()
+            except LibraryError as exc:
+                st.error(str(exc))
+            except Exception:
+                st.error("No se pudo validar o cargar el archivo. No se modificaron los modelos.")
+        if st.session_state.pop("quick_restore_ok", None):
+            st.success("Modelo recuperado correctamente. Puedes usarlo en Generación.")
+    if not quick_store or not quick_store.stable:
+        st.warning("Para que una descarga pueda abrirse después de un reinicio del servidor, el administrador debe configurar una sola vez PYC_MODEL_SIGNING_KEY en los Secrets de Streamlit. No es una clave por modelo, ni debes introducirla para guardar o recuperar.")
+        with st.expander("Configuración única del administrador"):
+            if st.button("Crear valor privado para configurar en Streamlit", key="quick_key_create"):
+                st.session_state["quick_key_setup"] = secrets.token_hex(32)
+            if st.session_state.get("quick_key_setup"):
+                st.code('PYC_MODEL_SIGNING_KEY = "' + st.session_state["quick_key_setup"] + '"', language="toml")
+                st.caption("Copia esta línea a Streamlit Cloud → Manage app → Settings → Secrets. No la publiques en GitHub ni la cambies después: los respaldos antiguos dejarían de validarse.")
     experiment_name=st.text_input("Nombre del modelo",f"TVAE {len(st.session_state.models)+1}")
     c1,c2,c3=st.columns(3)
     with c1:
@@ -668,13 +710,34 @@ elif page=="Entrenamiento":
                 torch.manual_seed(int(seed));np.random.seed(int(seed))
                 model=TVAESynthesizer(meta,epochs=int(epochs),batch_size=int(batch),embedding_dim=int(embedding),compress_dims=dims,decompress_dims=dims,l2scale=float(l2),loss_factor=int(loss),enforce_min_max_values=minmax,enforce_rounding=rounding,enable_gpu=False)
                 start=time.perf_counter();model.fit(source);duration=time.perf_counter()-start
-                st.session_state.models.append({"name":experiment_name,"model":model,"train_sec":round(duration,2),"params":{"épocas":epochs,"batch":batch,"embedding":embedding,"capas":layers,"L2":l2,"loss":loss,"semilla":seed,"minmax":minmax,"rounding":rounding,"diccionario":st.session_state.dictionary.to_json(orient="records")}})
+                st.session_state.models.append({"source_fingerprint": fingerprint(t), "name":experiment_name,"model":model,"train_sec":round(duration,2),"params":{"épocas":epochs,"batch":batch,"embedding":embedding,"capas":layers,"L2":l2,"loss":loss,"semilla":seed,"minmax":minmax,"rounding":rounding,"diccionario":st.session_state.dictionary.to_json(orient="records")}})
                 st.success(f"Modelo '{experiment_name}' entrenado y guardado en esta sesión. Tiempo: {duration:.2f} s.")
             except Exception as exc:st.error(f"Error de entrenamiento: {exc}")
     if st.session_state.models:
         st.markdown("**Modelos entrenados disponibles**")
         st.dataframe(pd.DataFrame([{"Modelo":m["name"],"Tiempo (s)":m["train_sec"],**m["params"]} for m in st.session_state.models]),use_container_width=True)
-    st.caption("Persistencia: los modelos están en memoria de sesión, no en almacenamiento externo. Para almacenamiento permanente hace falta configurar un servicio externo privado; esta versión no afirma conservarlos tras reinicios.")
+    if st.session_state.models:
+        st.markdown("### 💾 Descargar entrenamiento a mi computador")
+        st.caption("Este archivo guarda el modelo TVAE entrenado, parámetros, base de referencia y diccionario. Descárgalo antes de cerrar la sesión: no tendrás que volver a entrenar para importarlo.")
+        quick_idx = st.selectbox("Elige el entrenamiento a descargar", list(range(len(st.session_state.models))), format_func=lambda i: f"{st.session_state.models[i]['name']} · {st.session_state.models[i]['params']['épocas']} épocas", key="quick_model_export_idx")
+        quick_selected = st.session_state.models[quick_idx]
+        if st.button("Preparar respaldo del modelo", disabled=not bool(quick_store and quick_store.stable), key="quick_model_prepare"):
+            try:
+                payload = capture_model(quick_selected, st.session_state.tables, st.session_state.dictionary, confirm_legacy=True)
+                packed = quick_store.seal(payload)
+                quick_selected["library_id"] = payload["model"]["library_id"]
+                st.session_state["quick_backup_prepared"] = (quick_selected["library_id"], packed)
+                st.success("Respaldo preparado. Descárgalo usando el botón que aparece abajo.")
+            except LibraryError as exc:
+                st.error(str(exc))
+            except Exception:
+                st.error("No se pudo preparar el respaldo; el entrenamiento original sigue en la sesión.")
+        prepared = st.session_state.get("quick_backup_prepared")
+        if prepared and prepared[0] == quick_selected.get("library_id"):
+            safe_name = "TVAE_" + str(quick_selected["params"]["épocas"]) + "_epocas_" + prepared[0][:8] + ".pycmodel"
+            st.download_button("⬇️ Descargar modelo entrenado", data=prepared[1], file_name=safe_name, mime="application/octet-stream", key="quick_model_download")
+            st.info("Confirma que el archivo se descargó en tu computador. El modelo no depende de la biblioteca local para recuperarse.")
+    st.caption("El respaldo descargado persiste en tu computador. La memoria de Streamlit y la biblioteca local siguen siendo temporales. Importar requiere las mismas versiones compatibles y la clave interna del servidor, configurada una sola vez por el administrador.")
 
 elif page=="Generación":
     section_header("Generación de datos sintéticos","Crea nuevas corridas desde un modelo ya entrenado, sin volver a entrenar")
