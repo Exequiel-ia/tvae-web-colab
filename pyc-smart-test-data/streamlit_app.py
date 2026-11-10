@@ -17,7 +17,6 @@ from relational import generate_children, verify_relations
 from model_library import ModelLibrary, LibraryError, capture_model, activate, fingerprint, policy_signature, MAX_BYTES
 from pathlib import Path
 import os
-import secrets
 
 st.set_page_config(page_title="PyC Smart Test Data Lab", page_icon="🧪", layout="wide")
 st.markdown("""<style>
@@ -638,10 +637,21 @@ elif page=="Entrenamiento":
     st.info("En esta primera PoC se entrena exclusivamente la tabla Clientes, sin cliente_id. Ventas, Facturas y Pagos siguen siendo construidas mediante reglas de ejemplo. No es todavía un modelo generativo relacional.")
     # No access-code folders: the browser backup is the portable source of truth.
     # Serialized models are imported ONLY after a server-side HMAC verification.
+    # Reuse the application's existing private DB_TOKEN as a persistent source
+    # for a domain-separated HMAC key. No new Secrets or user passwords required.
+    # Never persist, render or transmit DB_TOKEN through the checkpoint.
     try:
-        signing_key = os.environ.get("PYC_MODEL_SIGNING_KEY") or st.secrets.get("PYC_MODEL_SIGNING_KEY")
+        existing_token = os.environ.get("DB_TOKEN") or st.secrets.get("DB_TOKEN")
     except Exception:
-        signing_key = os.environ.get("PYC_MODEL_SIGNING_KEY")
+        existing_token = os.environ.get("DB_TOKEN")
+    try:
+        explicit_key = os.environ.get("PYC_MODEL_SIGNING_KEY") or st.secrets.get("PYC_MODEL_SIGNING_KEY")
+    except Exception:
+        explicit_key = os.environ.get("PYC_MODEL_SIGNING_KEY")
+    signing_key = explicit_key
+    if not signing_key and isinstance(existing_token, str) and len(existing_token) >= 24:
+        import hashlib
+        signing_key = hashlib.sha256(b"PyC-TDM-checkpoint-signature-v1\\x00" + existing_token.encode("utf-8")).hexdigest()
     try:
         quick_store = ModelLibrary(Path.home() / ".pyc-model-library", signing_key)
     except LibraryError as exc:
@@ -667,13 +677,9 @@ elif page=="Entrenamiento":
         if st.session_state.pop("quick_restore_ok", None):
             st.success("Modelo recuperado correctamente. Puedes usarlo en Generación.")
     if not quick_store or not quick_store.stable:
-        st.warning("Para que una descarga pueda abrirse después de un reinicio del servidor, el administrador debe configurar una sola vez PYC_MODEL_SIGNING_KEY en los Secrets de Streamlit. No es una clave por modelo, ni debes introducirla para guardar o recuperar.")
-        with st.expander("Configuración única del administrador"):
-            if st.button("Crear valor privado para configurar en Streamlit", key="quick_key_create"):
-                st.session_state["quick_key_setup"] = secrets.token_hex(32)
-            if st.session_state.get("quick_key_setup"):
-                st.code('PYC_MODEL_SIGNING_KEY = "' + st.session_state["quick_key_setup"] + '"', language="toml")
-                st.caption("Copia esta línea a Streamlit Cloud → Manage app → Settings → Secrets. No la publiques en GitHub ni la cambies después: los respaldos antiguos dejarían de validarse.")
+        st.error("La aplicación no pudo habilitar respaldos portátiles con la configuración privada existente. No inicies entrenamientos largos: informa este mensaje para corregir el servidor.")
+    else:
+        st.success("Respaldo portable disponible: puedes descargar y cargar modelos sin configurar nada.")
     experiment_name=st.text_input("Nombre del modelo",f"TVAE {len(st.session_state.models)+1}")
     c1,c2,c3=st.columns(3)
     with c1:
@@ -740,7 +746,7 @@ elif page=="Entrenamiento":
             safe_name = "TVAE_" + str(quick_selected["params"]["épocas"]) + "_epocas_" + prepared[0][:8] + ".pycmodel"
             st.download_button("⬇️ Descargar modelo entrenado", data=prepared[1], file_name=safe_name, mime="application/octet-stream", key="quick_model_download")
             st.info("Confirma que el archivo se descargó en tu computador. El modelo no depende de la biblioteca local para recuperarse.")
-    st.caption("El respaldo descargado persiste en tu computador. La memoria de Streamlit y la biblioteca local siguen siendo temporales. Importar requiere las mismas versiones compatibles y la clave interna del servidor, configurada una sola vez por el administrador.")
+    st.caption("El respaldo descargado persiste en tu computador. La memoria de Streamlit y la biblioteca local siguen siendo temporales. Importar requiere las mismas versiones compatibles y la configuración privada existente del servidor; no necesitas realizar ninguna configuración.")
 
 elif page=="Generación":
     section_header("Generación de datos sintéticos","Crea nuevas corridas desde un modelo ya entrenado, sin volver a entrenar")
