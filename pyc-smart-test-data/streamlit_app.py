@@ -661,7 +661,7 @@ elif page=="Entrenamiento":
         st.write("Selecciona un archivo **.pycmodel** exportado por esta aplicación. Recupera el modelo, su base y el diccionario, sin entrenar de nuevo.")
         quick_upload = st.file_uploader("Archivo de modelo", type=["pycmodel"], key="quick_model_upload")
         replace_context = st.checkbox("Acepto recuperar también la base y el diccionario del respaldo si son distintos de los actuales", key="quick_model_replace")
-        if st.button("Cargar modelo y utilizarlo", disabled=quick_upload is None or not bool(quick_store and quick_store.stable), key="quick_model_load"):
+        if st.button("Cargar modelo y utilizarlo", disabled=quick_upload is None or quick_store is None, key="quick_model_load"):
             try:
                 if quick_upload.size > MAX_BYTES:
                     raise LibraryError("El respaldo supera el tamaño máximo permitido.")
@@ -676,10 +676,12 @@ elif page=="Entrenamiento":
                 st.error("No se pudo validar o cargar el archivo. No se modificaron los modelos.")
         if st.session_state.pop("quick_restore_ok", None):
             st.success("Modelo recuperado correctamente. Puedes usarlo en Generación.")
-    if not quick_store or not quick_store.stable:
-        st.error("La aplicación no pudo habilitar respaldos portátiles con la configuración privada existente. No inicies entrenamientos largos: informa este mensaje para corregir el servidor.")
-    else:
+    if quick_store and quick_store.stable:
         st.success("Respaldo portable disponible: puedes descargar y cargar modelos sin configurar nada.")
+    elif quick_store:
+        st.warning("Respaldo local habilitado: puedes entrenar y descargar un modelo, pero su archivo podría dejar de ser recuperable si Streamlit reinicia el servidor. No utilices aún esta opción para entrenamientos largos.")
+    else:
+        st.error("No se pudo inicializar el respaldo del modelo. Revisa la configuración de la aplicación.")
     experiment_name=st.text_input("Nombre del modelo",f"TVAE {len(st.session_state.models)+1}")
     c1,c2,c3=st.columns(3)
     with c1:
@@ -702,7 +704,7 @@ elif page=="Entrenamiento":
         minmax=st.checkbox("Respetar mínimo y máximo numérico observado",value=True,help="Durante el posprocesamiento, limita valores numéricos a los límites observados. Puede recortar extremos.")
         rounding=st.checkbox("Conservar redondeo numérico",value=True,help="Intenta devolver los valores numéricos con una precisión equivalente a la de origen.")
         st.caption("La semilla es reproducibilidad, no calidad. El número de filas sintéticas se define en Generación y NO requiere reentrenar.")
-    if st.button("Entrenar y guardar modelo",type="primary",disabled=not bool(quick_store and quick_store.stable),help="Se habilita solo cuando se pueda descargar y recuperar el modelo entrenado."):
+    if st.button("Entrenar y guardar modelo",type="primary",disabled=quick_store is None,help="Después del entrenamiento descarga una copia; comprueba que puedes restaurarla."):
         if not dictionary_ready() or validate_dictionary(t,st.session_state.dictionary):
             st.error("Revisa y aprueba el diccionario de columnas en Diccionario y privacidad antes de entrenar.")
             st.stop()
@@ -730,7 +732,7 @@ elif page=="Entrenamiento":
         st.caption("Este archivo guarda el modelo TVAE entrenado, parámetros, base de referencia y diccionario. Descárgalo antes de cerrar la sesión: no tendrás que volver a entrenar para importarlo.")
         quick_idx = st.selectbox("Elige el entrenamiento a descargar", list(range(len(st.session_state.models))), format_func=lambda i: f"{st.session_state.models[i]['name']} · {st.session_state.models[i]['params']['épocas']} épocas", key="quick_model_export_idx")
         quick_selected = st.session_state.models[quick_idx]
-        if st.button("Preparar respaldo del modelo", disabled=not bool(quick_store and quick_store.stable), key="quick_model_prepare"):
+        if st.button("Preparar respaldo del modelo", disabled=quick_store is None, key="quick_model_prepare"):
             try:
                 payload = capture_model(quick_selected, st.session_state.tables, st.session_state.dictionary, confirm_legacy=True)
                 packed = quick_store.seal(payload)
@@ -746,7 +748,7 @@ elif page=="Entrenamiento":
             safe_name = "TVAE_" + str(quick_selected["params"]["épocas"]) + "_epocas_" + prepared[0][:8] + ".pycmodel"
             st.download_button("⬇️ Descargar modelo entrenado", data=prepared[1], file_name=safe_name, mime="application/octet-stream", key="quick_model_download")
             st.info("Confirma que el archivo se descargó en tu computador. El modelo no depende de la biblioteca local para recuperarse.")
-    st.caption("El respaldo descargado persiste en tu computador. La memoria de Streamlit y la biblioteca local siguen siendo temporales. Importar requiere las mismas versiones compatibles y la configuración privada existente del servidor; no necesitas realizar ninguna configuración.")
+    st.caption("Descarga el respaldo antes de cerrar. Importarlo exige las mismas versiones de librerías; si el servidor se reinicia y no tenía una clave interna estable, el archivo no podrá validarse.")
 
 elif page=="Generación":
     section_header("Generación de datos sintéticos","Crea nuevas corridas desde un modelo ya entrenado, sin volver a entrenar")
