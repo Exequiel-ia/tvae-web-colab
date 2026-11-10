@@ -677,7 +677,7 @@ elif page=="Entrenamiento":
     experiment_name=st.text_input("Nombre del modelo",f"TVAE {len(st.session_state.models)+1}")
     c1,c2,c3=st.columns(3)
     with c1:
-        epochs=st.slider("Épocas",min_value=10,max_value=400,value=100,step=10,help="Número de pasadas completas por todos los registros. Más épocas dan más oportunidades de aprender, pero tardan más y pueden sobreajustar.")
+        epochs=st.slider("Épocas",min_value=10,max_value=800,value=100,step=10,help="Número de pasadas completas por todos los registros. Más épocas dan más oportunidades de aprender, pero tardan más y pueden sobreajustar.")
         st.caption("↑ Mayor aprendizaje potencial y tiempo. ↓ Entrena más rápido; puede perder patrones.")
         batch=st.selectbox("Batch size",[20,50,100,200,500],index=2,help="Registros usados por cada actualización del modelo. Un batch pequeño introduce más variabilidad y más pasos por época; uno grande suele usar más memoria.")
         st.caption("↑ Actualizaciones más estables, más memoria. ↓ Más pasos y variabilidad.")
