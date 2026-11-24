@@ -324,7 +324,7 @@ def validate_dictionary(tables,d):
     return errors
 
 def training_policy(tables,dictionary):
-    """Create an enforceable training projection for the present customer-only PoC."""
+    """Enforce customer feature policy; related-table projections use safe non-ID features."""
     errors=[]
     customer=dictionary[dictionary["Entidad"]=="clientes"].set_index("Columna")
     required=["segmento","region","nivel_riesgo","edad"]
@@ -552,7 +552,7 @@ elif page=="Diccionario y privacidad":
                 st.caption("Los experimentos anteriores siguen disponibles como historial. Para nuevas generaciones vuelve a cargar un modelo compatible o entrena.")
     count=int(st.session_state.dictionary.groupby("Entidad")["Aprobado"].all().sum())
     st.caption(f"Tablas completamente clasificadas: {count} de {len(t)}. Guardar una tabla válida la marca automáticamente como revisada.")
-    st.warning("La PoC todavía solo entrena los campos no sensibles de Clientes. Los otros campos y entidades no están aún integrados en el aprendizaje relacional del modelo. La protección de datos reales requiere controles adicionales.")
+    st.warning("Al entrenar las cuatro tablas se usan cuatro sintetizadores TVAE independientes para atributos de negocio; las claves y reglas entre tablas se gestionan explícitamente. La protección de datos reales requiere controles adicionales.")
 elif page=="Exploración":
     section_header("Exploración y criterios de preservación","Define qué comportamiento del dataset original debe conservarse")
     st.markdown("**Objetivo:** entender el dataset original y decidir qué características deben conservar los datos sintéticos. Los criterios definidos se guardan en esta sesión para comparar los experimentos.")
@@ -802,7 +802,7 @@ elif page=="Generación":
                     conf_check={c:len(set(t["clientes"][c].astype(str)) & set(synthetic["clientes"][c].astype(str))) for c in CONFIDENTIAL_FIELDS if c in t["clientes"]}
                     if any(conf_check.values()):raise ValueError(f"Coincidencias confidenciales detectadas: {conf_check}")
                     if not verify(synthetic):raise ValueError("Error de integridad referencial entre las cuatro entidades")
-                    score=100*max(0,1-abs(float(t["clientes"].edad.mean())-float(generated.edad.mean()))/max(float(t["clientes"].edad.mean()),1))
+                    score=100*max(0,1-abs(float(t["clientes"].edad.mean())-float(synthetic["clientes"].edad.mean()))/max(float(t["clientes"].edad.mean()),1))
                     generated_at=datetime.now().astimezone().isoformat(timespec="seconds")
                     run={"generado_el":generated_at,"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic,"params":selected["params"].copy(),"dataset_role":("4 modelos TVAE independientes; cardinalidades, claves y reglas contables controladas" if selected.get("child_models") else "clientes TVAE; entidades relacionadas por patrones empíricos observados y reglas contables")}
                     st.session_state.runs.append(run)
