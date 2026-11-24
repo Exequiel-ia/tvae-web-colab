@@ -777,7 +777,7 @@ elif page=="Generación":
         qty=st.slider("Cantidad de clientes sintéticos",50,2000,250,step=50,help="Número de clientes. La cantidad de entidades dependientes debe respetar relaciones y reglas.")
         st.markdown("**Relaciones basadas en datos:** la cantidad de ventas por cliente, proporción de ventas facturadas y patrones de pagos se estiman desde las tablas originales. Las claves y reglas de montos se reconstruyen y validan.")
         estimated_min,estimated_max=qty,qty*3
-        st.caption("Los volúmenes dependientes no son independientes: se determinan a partir de los patrones observados. Esta etapa utiliza muestreo empírico, no TVAE multitabla.")
+        st.caption("Las cantidades por relación se basan en patrones observados. En modo Cuatro tablas se usan cuatro TVAE independientes para atributos; las claves y reglas contables son explícitas. No hay aprendizaje relacional conjunto.")
         batch_name=st.text_input("Nombre del dataset generado",f"Generación {len(st.session_state.runs)+1}")
         if st.button("Generar datos con el modelo seleccionado",type="primary"):
             with st.spinner("Generando datos nuevos..."):
