@@ -31,9 +31,9 @@ def fill_identities(customers: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
         # "Zona Demo" makes it clear this is not a verified real residential address.
         addr = f"{street} {int(rng.integers(100, 9900))}, Zona Demo, {location}"
         slug = re.sub(r"[^a-z0-9]+", ".", name.lower()).strip(".")[:30] or "cliente"
-        email = f"{slug}.{idx:05d}@example.invalid"
+        email = f"{slug}.{int(seed) % 100000:05d}.{idx:05d}@example.invalid"
         # Intentionally non-dialable placeholders; never produce real phone numbers.
-        phone = f"+51 9XX XXX {idx % 1000:03d}"
+        phone = f"+51 9XX {int(seed) % 1000:03d} {idx % 1000:03d}"
         names.append(name)
         addresses.append(addr)
         emails.append(email)
