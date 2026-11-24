@@ -14,6 +14,8 @@ import streamlit as st
 from sdv.metadata import SingleTableMetadata
 from sdv.single_table import TVAESynthesizer
 from relational import generate_children, verify_relations
+from multi_table_tvae import train_models, generate_tables
+from demo_customers import fill_identities
 from model_library import ModelLibrary, LibraryError, capture_model, activate, fingerprint, policy_signature, MAX_BYTES
 from pathlib import Path
 import os
@@ -150,6 +152,7 @@ def build_data(n=250, seed=42):
         "region":rng.choice(["Lima","Arequipa","Cusco","Trujillo"],n),
         "nivel_riesgo":rng.choice(["Bajo","Medio","Alto"],n,p=[.65,.25,.10]),
         "edad":rng.integers(18,81,n)})
+    clientes=fill_identities(clientes,seed=int(seed))
     ventas=[]
     for cid in clientes.cliente_id:
         for _ in range(int(rng.integers(1,4))):
@@ -634,7 +637,7 @@ elif page=="Exploración":
 elif page=="Entrenamiento":
     st.subheader("01 · Entrenamiento de TVAE")
     st.markdown("El entrenamiento aprende patrones estadísticos del dataset original. **No genera todavía nuevos registros**. Al terminar, el modelo queda disponible para ejecutar diferentes generaciones.")
-    st.info("En esta primera PoC se entrena exclusivamente la tabla Clientes, sin cliente_id. Ventas, Facturas y Pagos siguen siendo construidas mediante reglas de ejemplo. No es todavía un modelo generativo relacional.")
+    st.info("Puedes entrenar solo Clientes o cuatro modelos TVAE (Clientes, Ventas, Facturas y Pagos). En ambos casos las claves y restricciones entre tablas se controlan mediante reglas; no es todavía un sintetizador relacional completamente aprendido.")
     # No access-code folders: the browser backup is the portable source of truth.
     # Serialized models are imported ONLY after a server-side HMAC verification.
     # Reuse the application's existing private DB_TOKEN as a persistent source
@@ -683,6 +686,9 @@ elif page=="Entrenamiento":
     else:
         st.error("No se pudo inicializar el respaldo del modelo. Revisa la configuración de la aplicación.")
     experiment_name=st.text_input("Nombre del modelo",f"TVAE {len(st.session_state.models)+1}")
+    train_scope=st.radio("Alcance del entrenamiento",["Solo Clientes (TVAE rápido)","Todas las tablas (4 modelos TVAE)"],horizontal=True,help="Cuatro TVAE separados para Clientes, Ventas, Facturas y Pagos. Las claves y reglas se gestionan explícitamente; no equivale a un generador multitabla totalmente aprendido.")
+    if train_scope.startswith("Todas"):
+        st.warning("Entrenar cuatro modelos puede tardar mucho más que entrenar Clientes. La consistencia se mantiene mediante claves, cardinalidades observadas y reglas funcionales.")
     c1,c2,c3=st.columns(3)
     with c1:
         epochs=st.slider("Épocas",min_value=10,max_value=800,value=100,step=10,help="Número de pasadas completas por todos los registros. Más épocas dan más oportunidades de aprender, pero tardan más y pueden sobreajustar.")
@@ -719,10 +725,21 @@ elif page=="Entrenamiento":
             try:
                 import torch
                 torch.manual_seed(int(seed));np.random.seed(int(seed))
-                model=TVAESynthesizer(meta,epochs=int(epochs),batch_size=int(batch),embedding_dim=int(embedding),compress_dims=dims,decompress_dims=dims,l2scale=float(l2),loss_factor=int(loss),enforce_min_max_values=minmax,enforce_rounding=rounding,enable_gpu=False)
-                start=time.perf_counter();model.fit(source);duration=time.perf_counter()-start
-                st.session_state.models.append({"source_fingerprint": fingerprint(t), "name":experiment_name,"model":model,"train_sec":round(duration,2),"params":{"épocas":epochs,"batch":batch,"embedding":embedding,"capas":layers,"L2":l2,"loss":loss,"semilla":seed,"minmax":minmax,"rounding":rounding,"diccionario":st.session_state.dictionary.to_json(orient="records")}})
-                st.success(f"Modelo '{experiment_name}' entrenado y guardado en esta sesión. Tiempo: {duration:.2f} s.")
+                start=time.perf_counter()
+                child_models=None
+                if train_scope.startswith("Todas"):
+                    trained=train_models(t,{"epochs":epochs,"batch":batch,"embedding":embedding,"dims":dims,"l2":l2,"loss":loss,"minmax":minmax,"rounding":rounding},seed=seed)
+                    model=trained["clientes"]
+                    child_models={key:value for key,value in trained.items() if key!="clientes"}
+                else:
+                    model=TVAESynthesizer(meta,epochs=int(epochs),batch_size=int(batch),embedding_dim=int(embedding),compress_dims=dims,decompress_dims=dims,l2scale=float(l2),loss_factor=int(loss),enforce_min_max_values=minmax,enforce_rounding=rounding,enable_gpu=False)
+                    model.fit(source)
+                duration=time.perf_counter()-start
+                record={"source_fingerprint":fingerprint(t),"name":experiment_name,"model":model,"train_sec":round(duration,2),"params":{"épocas":epochs,"batch":batch,"embedding":embedding,"capas":layers,"L2":l2,"loss":loss,"semilla":seed,"minmax":minmax,"rounding":rounding,"diccionario":st.session_state.dictionary.to_json(orient="records"),"alcance":"cuatro_tablas" if child_models else "solo_clientes"}}
+                if child_models:
+                    record["child_models"]=child_models
+                st.session_state.models.append(record)
+                st.success(f"Modelo '{experiment_name}' entrenado y guardado en esta sesión. Alcance: {'4 tablas TVAE' if child_models else 'Clientes TVAE'}. Tiempo total: {duration:.2f} s.")
             except Exception as exc:st.error(f"Error de entrenamiento: {exc}")
     if st.session_state.models:
         st.markdown("**Modelos entrenados disponibles**")
@@ -767,15 +784,17 @@ elif page=="Generación":
                 try:
                     selected=st.session_state.models[model_idx]
                     start=time.perf_counter()
-                    generated=selected["model"].sample(num_rows=int(qty))
+                    generation_seed=int(len(st.session_state.runs)+100)
+                    if selected.get("child_models"):
+                        four_models={"clientes":selected["model"],**selected["child_models"]}
+                        synthetic=generate_tables(t,four_models,int(qty),seed=generation_seed)
+                    else:
+                        generated=selected["model"].sample(num_rows=int(qty))
+                        generated["edad"]=pd.to_numeric(generated["edad"],errors="coerce").fillna(40).clip(18,100).astype(int)
+                        generated["cliente_id"]=np.arange(1,len(generated)+1)
+                        generated=fill_identities(generated,seed=generation_seed+1000)
+                        synthetic=generate_children(t,generated[t["clientes"].columns.tolist()],seed=generation_seed)
                     generation=time.perf_counter()-start
-                    generated["edad"]=pd.to_numeric(generated["edad"],errors="coerce").fillna(40).clip(18,100).astype(int)
-                    generated["cliente_id"]=np.arange(1,len(generated)+1)
-                    generated["nombre_cliente"]=[f"Sintético {i+1:05d}" for i in range(len(generated))]
-                    generated["direccion"]=[f"Avenida Inventada {i+1}, Distrito Prueba" for i in range(len(generated))]
-                    generated["email"]=[f"sintetico{i+1:05d}@example.invalid" for i in range(len(generated))]
-                    generated["telefono"]=[f"999-{i+1:07d}" for i in range(len(generated))]
-                    synthetic=generate_children(t,generated[t["clientes"].columns.tolist()],seed=int(len(st.session_state.runs)+100))
                     relation_errors=verify_relations(synthetic)
                     if relation_errors:raise ValueError("Relaciones: "+"; ".join(relation_errors))
                     domain_errors=check_synthetic_domains(synthetic,st.session_state.dictionary)
@@ -785,7 +804,7 @@ elif page=="Generación":
                     if not verify(synthetic):raise ValueError("Error de integridad referencial entre las cuatro entidades")
                     score=100*max(0,1-abs(float(t["clientes"].edad.mean())-float(generated.edad.mean()))/max(float(t["clientes"].edad.mean()),1))
                     generated_at=datetime.now().astimezone().isoformat(timespec="seconds")
-                    run={"generado_el":generated_at,"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic,"params":selected["params"].copy(),"dataset_role":"clientes TVAE; entidades relacionadas por patrones empíricos observados y reglas contables"}
+                    run={"generado_el":generated_at,"nombre":batch_name,"modelo":selected["name"],"epochs":selected["params"]["épocas"],"batch":selected["params"]["batch"],"rows":qty,"train_sec":selected["train_sec"],"gen_sec":round(generation,2),"edad_media_similitud":round(score,2),"tables":synthetic,"params":selected["params"].copy(),"dataset_role":("4 modelos TVAE independientes; cardinalidades, claves y reglas contables controladas" if selected.get("child_models") else "clientes TVAE; entidades relacionadas por patrones empíricos observados y reglas contables")}
                     st.session_state.runs.append(run)
                     st.success(f"Dataset '{batch_name}' generado en {generation:.2f}s, sin reentrenar. Integridad básica: {verify(synthetic)}")
                     st.write("Fecha y hora de generación:",generated_at)
