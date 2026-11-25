@@ -38,8 +38,10 @@ def fill_identities(customers: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
         addresses.append(addr)
         emails.append(email)
         phones.append(phone)
+    # A fitted TVAE only samples business fields. The four identity fields are
+    # absent in that output, so they must be CREATED rather than updated only
+    # when already present. The same routine also replaces source demo fields.
     for col, values in [("nombre_cliente", names), ("direccion", addresses),
                         ("email", emails), ("telefono", phones)]:
-        if col in frame.columns:
-            frame[col] = values
+        frame[col] = values
     return frame
